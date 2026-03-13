@@ -1,26 +1,648 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video Rollout Tool - Local Environment</title>
+    <title>Video Rollout Tool</title>
+    <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load React, ReactDOM, Babel (to run JSX), and Lucide Icons -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-        body { background: #0f172a; margin: 0; padding: 0; }
+        body { background-color: #0f172a; color: #f1f5f9; margin: 0; }
         #root { min-height: 100vh; }
+        @keyframes shimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(100%); }
+        }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
     </style>
 </head>
 <body>
     <div id="root"></div>
-    <!-- Load Dependencies -->
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
-    
+
     <script type="text/babel">
-        // Inject the React application code directly
-        /* App logic will be here */
+        const { useState, useRef, useEffect, useMemo, useCallback, createContext, useContext } = React;
+
+        // --- HELPER: DYNAMIC ICON COMPONENT ---
+        const Icon = ({ name, size = 16, className = "" }) => {
+            const toPascalCase = (str) => {
+                return str
+                    .split('-')
+                    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+                    .join('');
+            };
+            const iconName = toPascalCase(name);
+            // Lucide icons are available globally via the CDN script
+            const IconComponent = lucide.icons[iconName] || lucide.icons.HelpCircle;
+            
+            // Create the icon using Lucide's create function for React
+            return (
+                <span dangerouslySetInnerHTML={{ 
+                    __html: lucide.createIcons({
+                        icons: { [iconName]: IconComponent },
+                        attrs: { strokeWidth: 2, width: size, height: size, class: className }
+                    }) 
+                }} />
+            );
+        };
+
+        // Standard React Icon fallback since lucide.createIcons returns DOM strings
+        const ReactIcon = ({ name, size = 16, className = "" }) => {
+            const toPascalCase = (str) => str.split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
+            const iconName = toPascalCase(name);
+            const LucideIcon = lucide.icons[iconName] || lucide.icons.HelpCircle;
+            
+            // We'll use a simple wrapper to make it act like a component
+            const svgData = LucideIcon[2].map(([tag, attrs]) => {
+                const attrString = Object.entries(attrs).map(([k, v]) => `${k}="${v}"`).join(' ');
+                return `<${tag} ${attrString} />`;
+            }).join('');
+
+            return (
+                <svg 
+                    width={size} 
+                    height={size} 
+                    viewBox="0 0 24 24" 
+                    fill="none" 
+                    stroke="currentColor" 
+                    strokeWidth="2" 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round" 
+                    className={className}
+                    dangerouslySetInnerHTML={{ __html: svgData }}
+                />
+            );
+        };
+
+        // --- CONFIGURATION CONSTANTS ---
+        const ELEMENT_COLORS = {
+            logo: { border: 'border-blue-500', bg: 'bg-blue-500/20', text: 'text-blue-400', ring: 'ring-blue-500', hex: '#60a5fa' },
+            title: { border: 'border-fuchsia-500', bg: 'bg-fuchsia-500/20', text: 'text-fuchsia-400', ring: 'ring-fuchsia-500', hex: '#e879f9' },
+            titleSquare: { border: 'border-pink-500', bg: 'bg-pink-500/20', text: 'text-pink-400', ring: 'ring-pink-500', hex: '#ec4899' },
+            titleHrz: { border: 'border-purple-500', bg: 'bg-purple-500/20', text: 'text-purple-400', ring: 'ring-purple-500', hex: '#a855f7' },
+            titleVertical: { border: 'border-violet-500', bg: 'bg-violet-500/20', text: 'text-violet-400', ring: 'ring-violet-500', hex: '#8b5cf6' },
+            classification: { border: 'border-amber-500', bg: 'bg-amber-500/20', text: 'text-amber-400', ring: 'ring-amber-500', hex: '#fbbf24' },
+            showText: { border: 'border-emerald-500', bg: 'bg-emerald-500/20', text: 'text-emerald-400', ring: 'ring-emerald-500', hex: '#34d399' },
+            endboardLogo: { border: 'border-orange-500', bg: 'bg-orange-500/20', text: 'text-orange-400', ring: 'ring-orange-500', hex: '#f97316' },
+            endboardText: { border: 'border-red-500', bg: 'bg-red-500/20', text: 'text-red-400', ring: 'ring-red-500', hex: '#ef4444' },
+        };
+
+        const DEFAULT_POSITIONS = {
+            logo: { x: 10, y: 10, scale: 1 },
+            title: { x: 50, y: 20, scale: 1 },
+            titleSquare: { x: 50, y: 50, scale: 1 },
+            titleHrz: { x: 50, y: 50, scale: 1 },
+            titleVertical: { x: 50, y: 50, scale: 1 },
+            classification: { x: 15, y: 85, scale: 1 },
+            showText: { x: 50, y: 50, scale: 1 },
+            endboardLogo: { x: 50, y: 40, scale: 1 },
+            endboardText: { x: 50, y: 65, scale: 1 }
+        };
+
+        const ELEMENT_WIDTHS = {
+            logo: 'w-[25%]',
+            title: 'w-[50%]',
+            titleSquare: 'w-[40%]',
+            titleHrz: 'w-[50%]',
+            titleVertical: 'w-[45%]',
+            classification: 'w-[20%]',
+            showText: 'w-[60%]',
+            endboardLogo: 'w-[40%]',
+            endboardText: 'w-[60%]'
+        };
+
+        const INGEST_MODULES = [
+            { id: 'hero_169', label: 'Hero 16:9', colSpan: 'lg:col-span-5' },
+            { id: 'hero_1x1', label: 'Hero 1:1', colSpan: 'lg:col-span-2' },
+            { id: 'hero_9x16', label: 'Hero 9:16', colSpan: 'lg:col-span-2' },
+            { id: 'hero_4x5', label: 'Hero 4:5', colSpan: 'lg:col-span-2' },
+            { id: 'stan_resolve_section', label: 'Stan Resolve', colSpan: 'lg:col-span-11' }, 
+            { id: 'endboard_config', label: 'Endboard', colSpan: 'lg:col-span-3' }, 
+            { id: 'campaign_length', label: 'Lengths', colSpan: 'lg:col-span-3' },
+            { id: 'brand_assets', label: 'Logo & Title', colSpan: 'lg:col-span-3' },
+            { id: 'classification', label: 'Classification', colSpan: 'lg:col-span-3' },
+            { id: 'targeting', label: 'Targeting', colSpan: 'lg:col-span-3' },
+            { id: 'phase_messaging', label: 'Phase Messaging', colSpan: 'lg:col-span-3' },
+            { id: 'brand_fonts', label: 'Brand Fonts', colSpan: 'lg:col-span-3' }
+        ];
+
+        const STAN_RESOLVE_TYPES = [
+            { id: 'STAN', label: 'STAN' },
+            { id: 'STAN_SPORT', label: 'STAN SPORT' },
+            { id: 'STAN_PPV', label: 'STAN PPV' }
+        ];
+
+        const AU_RATINGS = [
+            { code: 'G', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/05/Australian_Classification_G.svg/1200px-Australian_Classification_G.svg.png', text: 'General', color: '#00a54f', txtColor: 'white' },
+            { code: 'PG', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/ba/Australian_Classification_PG.svg/1200px-Australian_Classification_PG.svg.png', text: 'Parental Guidance', color: '#fdb913', txtColor: 'black' },
+            { code: 'M', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/85/Australian_Classification_M.svg/1200px-Australian_Classification_M.svg.png', text: 'Mature', color: '#0093d0', txtColor: 'white' },
+            { code: 'MA15+', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/22/Australian_Classification_MA15%2B.svg/1200px-Australian_Classification_MA15%2B.svg.png', text: 'Mature Accompanied', color: '#ed1b24', txtColor: 'white' },
+            { code: 'R18+', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b6/Australian_Classification_R18%2B.svg/1200px-Australian_Classification_R18%2B.svg.png', text: 'Restricted', color: '#000000', txtColor: 'white' },
+            { code: 'CTC_Square', img: 'CTC_Square.png', text: 'Check the Classification - Square', color: '#f58220', txtColor: 'black' },
+            { code: 'CTC_HRZ', img: 'CTC_HRZ.png', text: 'Check the Classification - Horizontal', color: '#f58220', txtColor: 'black' }
+        ];
+
+        const PHASE_TYPES = [
+            { code: 'PP', name: 'Pre Promote' },
+            { code: 'WL', name: 'Week Launch' },
+            { code: 'DL', name: 'Day Launch' },
+            { code: 'TM', name: 'Tomorrow' },
+            { code: 'TD', name: 'Today' },
+            { code: 'TN', name: 'Tonight' },
+            { code: 'SN', name: 'Stream Now' },
+            { code: 'EE', name: 'Every Episode' },
+            { code: 'Catch up', name: 'Catch Up' }
+        ];
+
+        const LENGTH_OPTIONS = [
+            { val: '30', label: '30' },
+            { val: '15', label: '15' },
+            { val: '6', label: '6' },
+            { val: '10', label: '10' },
+            { val: '60', label: '60' },
+            { val: 'OTHER', label: 'OTHER' }
+        ];
+
+        const TARGETING_OPTIONS = [
+            { val: 'Hero', label: 'Hero' },
+            { val: 'Broad', label: 'Broad' },
+            { val: 'Male', label: 'Male' },
+            { val: 'Female', label: 'Female' },
+            { val: 'Acclaim', label: 'Acclaim' },
+            { val: 'OTHER', label: 'OTHER' }
+        ];
+
+        const CATEGORIES = [
+            { id: 'bvod', name: 'BVOD' },
+            { id: 'online_video', name: 'Online Video' },
+            { id: 'partner', name: 'Partner' },
+            { id: 'platform', name: 'Platform' },
+            { id: 'social', name: 'Social' },
+            { id: 'tv', name: 'TV' }
+        ];
+
+        const EXPORT_PRESETS = [
+            { id: 'break_compile', name: 'BreakCompile', ext: 'epr' },
+            { id: 'broadcast', name: 'Broadcast', ext: 'epr' },
+            { id: 'bvod_high', name: 'BVOD_High', ext: 'epr' },
+            { id: 'bvod_low', name: 'BVOD_Low', ext: 'epr' },
+            { id: 'bvod_medium', name: 'BVOD_Medium', ext: 'epr' },
+            { id: 'platform', name: 'Platform', ext: 'epr' },
+            { id: 'prores', name: 'ProRes', ext: 'epr' },
+            { id: 'publicity', name: 'Publicity', ext: 'epr' },
+            { id: 'social', name: 'Social', ext: 'epr' }
+        ];
+
+        const PLATFORMS_DATA = [
+            { id: 'tiktok_topview', name: 'TikTok TopView', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'TikTok Premium TopView. Avoid bottom CTA and top-right skip buttons.', safeZones: [{ label: 'Bottom CTA Area', style: { left: 0, bottom: 0, width: '100%', height: '22%', background: 'rgba(255,0,0,0.1)' } }, { label: 'Top Navigation', style: { left: 0, top: 0, width: '100%', height: '10%' } }, { label: 'Right Interaction', style: { right: 0, bottom: '22%', width: '15%', height: '40%' } }] },
+            { id: 'reels', name: 'Instagram Reels', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'Instagram Reel format. UI overlays on right and bottom.', safeZones: [{ label: 'Right Interaction', style: { right: 0, bottom: '15%', width: '15%', height: '40%' } }, { label: 'Bottom Caption', style: { left: 0, bottom: 0, width: '100%', height: '25%' } }, { label: 'Top Nav', style: { left: 0, top: 0, width: '100%', height: '8%' } }] },
+            { id: 'tiktok', name: 'TikTok', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'TikTok standard. Critical to avoid right-side buttons and bottom info.', safeZones: [{ label: 'Right Buttons', style: { right: 0, bottom: '20%', width: '13%', height: '50%' } }, { label: 'Bottom Info', style: { left: 0, bottom: 0, width: '100%', height: '20%' } }, { label: 'Top Tabs', style: { left: 0, top: 0, width: '100%', height: '10%' } }] },
+            { id: 'ig_story', name: 'IG Stories', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: '15s Vertical. Leave space for reply field.', safeZones: [{ label: 'Top Bar', style: { left: 0, top: 0, width: '100%', height: '8%' } }, { label: 'Reply Field', style: { left: 0, bottom: 0, width: '100%', height: '15%' } }] },
+            { id: 'yt_shorts', name: 'YouTube Shorts', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'Vertical feed. Right side buttons critical.', safeZones: [{ label: 'Right Action Bar', style: { right: 0, bottom: '15%', width: '15%', height: '50%' } }, { label: 'Title Area', style: { left: 0, bottom: 0, width: '100%', height: '15%' } }] },
+            { id: 'tvc', name: 'TVC (Television)', group: 'Television', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'Broadcast standard. High bitrate.', safeZones: [{ label: 'Action Safe', style: { inset: '5%', border: '2px dashed rgba(255,0,0,0.5)' } }] },
+            { id: 'organic_social_169', name: 'Organic Social', group: 'Social', source: '16x9', ratio: '16/9', exportFormat: 'MP4', description: 'Standard landscape for social feeds.', safeZones: [{ label: 'General Safe', style: { inset: '5%', border: '1px dashed rgba(255,255,255,0.3)' } }] },
+            { id: 'fb_feed', name: 'Facebook/IG Feed', group: 'Social', source: '1x1', ratio: '1/1', exportFormat: 'MP4', description: 'Square 1:1.', safeZones: [{ label: 'Bottom Action', style: { left: 0, bottom: 0, width: '100%', height: '8%' } }] }
+        ];
+
+        const INITIAL_PHASE = { 
+            id: 1,
+            type: 'PP', 
+            audio: null, 
+            lines: [
+                { id: 101, text: "Stream New", weight: '700', size: 1.2, font: 'sans-serif' }, 
+                { id: 102, text: "Episodes Now", weight: '400', size: 1.0, font: 'sans-serif' }
+            ], 
+            align: 'center' 
+        };
+
+        const parseTimeCode = (tc) => {
+            if (!tc) return 0;
+            const parts = tc.split(/[:\-\.]/).map(Number);
+            if (parts.length < 3) return 0;
+            const [min, sec, frames] = parts;
+            return (min * 60) + sec + (frames / 25);
+        };
+
+        const triggerFileDownload = (url, filename) => {
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', filename);
+            link.setAttribute('target', '_blank');
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+
+        const NotificationContext = createContext();
+
+        function NotificationProvider({ children }) {
+            const [notifications, setNotifications] = useState([]);
+            const notify = (msg) => {
+                const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                setNotifications(prev => [...prev, { id, msg }]);
+                setTimeout(() => {
+                    setNotifications(prev => prev.filter(n => n.id !== id));
+                }, 10000);
+            };
+
+            return (
+                <NotificationContext.Provider value={notify}>
+                    {children}
+                    <div className="fixed top-4 right-4 z-[9999] pointer-events-none flex flex-col gap-2">
+                        {notifications.map(n => (
+                            <div key={n.id} className="bg-slate-800 border-l-4 border-indigo-500 text-slate-100 p-4 rounded shadow-2xl pointer-events-auto min-w-[300px] max-w-[450px] animate-in fade-in slide-in-from-right-10 duration-300">
+                                <div className="text-xs font-bold text-indigo-400 mb-1 uppercase tracking-wider">System Alert</div>
+                                <div className="text-sm whitespace-pre-line leading-relaxed max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">{n.msg}</div>
+                            </div>
+                        ))}
+                    </div>
+                </NotificationContext.Provider>
+            );
+        }
+
+        const useNotify = () => useContext(NotificationContext);
+
+        function AlignmentControl({ value, onChange }) {
+            return (
+                <div className="flex bg-slate-900 rounded border border-slate-600 p-0.5 flex-shrink-0">
+                    <button onClick={() => onChange('left')} className={`p-1 rounded transition-colors ${value === 'left' ? 'bg-slate-700 text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}><ReactIcon name="align-left" size={12} /></button>
+                    <button onClick={() => onChange('center')} className={`p-1 rounded transition-colors ${value === 'center' ? 'bg-slate-700 text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}><ReactIcon name="align-center" size={12} /></button>
+                    <button onClick={() => onChange('right')} className={`p-1 rounded transition-colors ${value === 'right' ? 'bg-slate-700 text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}><ReactIcon name="align-right" size={12} /></button>
+                </div>
+            );
+        }
+
+        function FileUploader({ label, accept, current, onUpload, iconName, aspect = 'aspect-square', mini = false, tiny = false, isIncluded = true, highlightColor }) { 
+            const inputRef = useRef(null); 
+            const [hasError, setHasError] = useState(false);
+            const heightClass = mini || tiny ? (tiny ? 'h-full' : 'h-24') : 'w-full'; 
+            const borderColorClass = isIncluded && highlightColor ? highlightColor : (current ? 'border-indigo-500/50' : 'border-slate-700'); 
+            
+            useEffect(() => { setHasError(false); }, [current]);
+
+            return ( 
+                <div className={`relative group ${heightClass} ${!isIncluded ? 'opacity-40 grayscale pointer-events-none' : ''} transition-all duration-300`}> 
+                    <input type="file" accept={accept} className="hidden" ref={inputRef} onChange={(e) => e.target.files[0] && onUpload(e.target.files[0])} /> 
+                    <div onClick={() => inputRef.current?.click()} className={`w-full rounded-lg border-2 border-dashed transition-all cursor-pointer overflow-hidden relative flex flex-col items-center justify-center ${borderColorClass} ${current ? (hasError ? 'bg-red-950' : 'bg-slate-800') : 'hover:border-slate-500 hover:bg-slate-800/50'} ${tiny ? '' : aspect} ${mini && !tiny ? 'h-full' : ''}`}> 
+                        {current ? ( 
+                            accept.includes('video') || current.includes('.mp4') || current.includes('.mov') ? (
+                                <>
+                                    <video src={current} className={`absolute inset-0 w-full h-full object-cover group-hover:opacity-100 transition-opacity ${hasError ? 'opacity-0' : 'opacity-60'}`} muted loop autoPlay onError={() => setHasError(true)} />
+                                    {hasError && (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-red-900/40 p-2 text-center">
+                                            <ReactIcon name="alert-octagon" size={mini ? 16 : 20} className="text-red-400 mb-1" />
+                                            <span className="text-red-200 text-[8px] font-bold uppercase leading-tight">Unsupported<br/>Codec</span>
+                                        </div>
+                                    )}
+                                </>
+                            ) : (
+                                <div className="w-full h-full flex items-center justify-center p-1"><img src={current} className="max-w-full max-h-full object-contain drop-shadow-lg" alt="preview" /></div>
+                            ) 
+                        ) : (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 gap-1 p-2">
+                                <div className={`bg-slate-800 rounded-full ${tiny ? 'p-1' : 'p-2'}`}>{iconName && <ReactIcon name={iconName} size={mini ? 16 : 24} />}</div>
+                                {!tiny && <span className="text-[10px] font-medium uppercase tracking-wider text-center">{label}</span>}
+                            </div>
+                        )} 
+                    </div> 
+                </div> 
+            ); 
+        }
+
+        function VisibilityControl({ label, elementKey, visibilityState, onToggleGlobal, onTogglePlatform, iconName }) { 
+            const [isOpen, setIsOpen] = useState(false); 
+            const popoverRef = useRef(null); 
+            useEffect(() => { 
+                const handleClickOutside = (event) => { if (popoverRef.current && !popoverRef.current.contains(event.target)) setIsOpen(false); }; 
+                if (isOpen) document.addEventListener('mousedown', handleClickOutside); 
+                return () => document.removeEventListener('mousedown', handleClickOutside); 
+            }, [isOpen]); 
+            return ( 
+                <div className="relative flex items-center gap-2 z-30 flex-grow" ref={popoverRef}> 
+                    <div className="flex items-center gap-2 cursor-pointer flex-grow" onClick={onToggleGlobal}>
+                        <input type="checkbox" checked={visibilityState?.global} readOnly className="w-3.5 h-3.5 rounded border-slate-600 accent-indigo-500 cursor-pointer"/>
+                        <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wider select-none hover:text-slate-200">{iconName && <ReactIcon name={iconName} size={12} />}{label}</div>
+                    </div> 
+                    <button onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }} className={`p-1 rounded hover:bg-slate-700 transition-colors ${isOpen ? 'text-indigo-400 bg-slate-700' : 'text-slate-500'}`} title="Manage Deliverables"><ReactIcon name="sliders-horizontal" size={12} /></button> 
+                    {isOpen && (
+                        <div className="absolute top-full left-0 mt-2 w-56 bg-slate-800 border border-slate-600 rounded-lg shadow-2xl p-3 z-50 animate-in fade-in slide-in-from-top-2">
+                            <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-700">
+                                <span className="text-xs font-bold text-white">Deliverable Visibility</span>
+                                <button onClick={() => setIsOpen(false)}><ReactIcon name="x" size={12} className="text-slate-400 hover:text-white" /></button>
+                            </div>
+                            <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar">
+                                {PLATFORMS_DATA.map(p => (
+                                    <div key={p.id} className="flex items-center gap-2 text-xs text-slate-300 hover:bg-slate-700/50 p-1.5 rounded cursor-pointer" onClick={() => onTogglePlatform(elementKey, p.id)}>
+                                        <input type="checkbox" checked={visibilityState?.platforms[p.id] !== false} readOnly disabled={!visibilityState?.global} className="w-3 h-3 rounded border-slate-500 accent-indigo-500"/>
+                                        <span className={`flex-grow truncate ${!visibilityState?.global ? 'opacity-50' : ''}`}>{p.name}</span>
+                                        <ReactIcon name={p.group.includes('Social') ? 'smartphone' : 'monitor'} size={12} />
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )} 
+                </div> 
+            ); 
+        }
+
+        function CreativeOverlay({ config, assets, textData, activePhase, isElementVisible, scaleFactor, currentTime, platformId }) {
+            const show = (key) => isElementVisible(key, platformId);
+            const endboardEnabled = textData.endboard?.enabled;
+            const endboardTriggerTime = parseTimeCode(textData.endboard?.timeCode || '00:00:00');
+            const isEndboardActive = endboardEnabled && currentTime >= endboardTriggerTime;
+
+            const OverlayItem = ({ id, children, aspect = '' }) => {
+                const data = config[id] || DEFAULT_POSITIONS[id];
+                const { x, y, scale } = data;
+                const widthClass = ELEMENT_WIDTHS[id] || 'w-32';
+                const aspectClass = aspect ? `w-full ${aspect}` : `w-full h-20`;
+                
+                return (
+                    <div className={`absolute z-10 origin-center pointer-events-none ${widthClass}`} style={{ left: `${x}%`, top: `${y}%`, transform: `translate(-50%, -50%) scale(${scale})` }}>
+                        <div className={`relative w-full ${aspectClass} flex items-center justify-center`}>{children}</div>
+                    </div>
+                );
+            };
+
+            return (
+                <div className="absolute inset-0 w-full h-full pointer-events-none" style={{ fontSize: `${scaleFactor * 16}px` }}>
+                    {!isEndboardActive && (
+                        <>
+                            {show('logo') && <OverlayItem id="logo" aspect="aspect-video">{assets.logo && <img src={assets.logo} alt="logo" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}</OverlayItem>}
+                            {show('titleSquare') && <OverlayItem id="titleSquare" aspect="aspect-square">{assets.title && <img src={assets.title} alt="title sq" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}</OverlayItem>}
+                            {show('titleHrz') && <OverlayItem id="titleHrz" aspect="aspect-video">{assets.title && <img src={assets.title} alt="title hrz" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}</OverlayItem>}
+                            {show('titleVertical') && <OverlayItem id="titleVertical" aspect="aspect-[9/16]">{assets.title && <img src={assets.title} alt="title vert" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}</OverlayItem>}
+                            {show('showText') && activePhase && (
+                                <OverlayItem id="showText">
+                                    <div className="flex flex-col w-full h-full justify-center" style={{ textAlign: activePhase.align }}>
+                                        {activePhase.lines.map(line => (<div key={line.id} style={{ fontFamily: line.font || 'sans-serif', fontWeight: line.weight, fontSize: `${line.size}em`, lineHeight: 1.2, color: 'white', textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>{line.text}</div>))}
+                                    </div>
+                                </OverlayItem>
+                            )}
+                        </>
+                    )}
+                    {isEndboardActive && show('endboardLogo') && <OverlayItem id="endboardLogo" aspect="aspect-video">{assets.title && <img src={assets.title} alt="end logo" className="w-full h-full object-contain opacity-90 drop-shadow-md" />}</OverlayItem>}
+                    {isEndboardActive && show('endboardText') && activePhase && (
+                        <OverlayItem id="endboardText">
+                            <div className="flex flex-col w-full h-full justify-center" style={{ textAlign: activePhase.align }}>
+                                {activePhase.lines.map(line => (<div key={line.id} style={{ fontFamily: line.font || 'sans-serif', fontWeight: line.weight, fontSize: `${line.size}em`, lineHeight: 1.2, color: 'white', textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>{line.text}</div>))}
+                            </div>
+                        </OverlayItem>
+                    )}
+                    {show('classification') && (
+                        <OverlayItem id="classification">
+                            <div className="flex items-center gap-2 w-full h-full justify-center">
+                                {(assets.classIcon || assets.rating) && <img src={assets.classIcon || (assets.rating ? AU_RATINGS.find(r => r.code === assets.rating)?.img : null)} alt={assets.rating} style={{ height: `${textData.classIconSize * scaleFactor}px`, width: 'auto' }} className="object-contain drop-shadow-md" />}
+                                {textData.classText && <span className="text-white drop-shadow-[0_1.2px_1.2px_rgba(0,0,0,0.8)] whitespace-pre-wrap leading-tight" style={{ fontFamily: textData.classFont, textAlign: textData.classAlign, fontWeight: textData.classWeight, fontSize: `${textData.classSize}em` }}>{textData.classText}</span>}
+                            </div>
+                        </OverlayItem>
+                    )}
+                </div>
+            );
+        }
+
+        function DraggableElement({ id, data, onUpdate, parentRef, label, locked, colorConfig, children, isEmpty, onDragStart, onDragEnd, aspect = '' }) { 
+            const { x, y, scale } = data; 
+            const [dragState, setDragState] = useState({ isDragging: false, isResizing: false, startX: 0, startY: 0, initialVal: {} }); 
+            const handleMouseDown = (e, type) => { if (locked) return; e.stopPropagation(); e.preventDefault(); setDragState({ isDragging: type === 'move', isResizing: type === 'resize', startX: e.clientX, startY: e.clientY, initialVal: { x, y, scale } }); if (type === 'move' && onDragStart) onDragStart(id); }; 
+            useEffect(() => { 
+                const handleMouseMove = (e) => { 
+                    if (!dragState.isDragging && !dragState.isResizing) return; 
+                    if (!parentRef.current) return; 
+                    const parentRect = parentRef.current.getBoundingClientRect(); 
+                    if (dragState.isDragging) { 
+                        const deltaX = ((e.clientX - dragState.startX) / parentRect.width) * 100; 
+                        const deltaY = ((e.clientY - dragState.startY) / parentRect.height) * 100; 
+                        onUpdate(id, { x: Math.max(0, Math.min(100, dragState.initialVal.x + deltaX)), y: Math.max(0, Math.min(100, dragState.initialVal.y + deltaY)) }); 
+                    } else if (dragState.isResizing) { 
+                        const deltaX = e.clientX - dragState.startX; 
+                        onUpdate(id, { scale: Math.max(0.2, Math.min(5, dragState.initialVal.scale + (deltaX * 0.005))) }); 
+                    } 
+                }; 
+                const handleMouseUp = () => { setDragState({ isDragging: false, isResizing: false, startX: 0, startY: 0, initialVal: {} }); if (onDragEnd) onDragEnd(); }; 
+                if (dragState.isDragging || dragState.isResizing) { window.addEventListener('mousemove', handleMouseMove); window.addEventListener('mouseup', handleMouseUp); } 
+                return () => { window.removeEventListener('mousemove', handleMouseMove); window.removeEventListener('mouseup', handleMouseUp); }; 
+            }, [dragState, parentRef, onUpdate, id, onDragEnd]); 
+            let placeholderClasses = `border-2 border-dashed ${colorConfig?.border} ${colorConfig?.bg} flex items-center justify-center opacity-80 backdrop-blur-sm`;
+            const widthClass = ELEMENT_WIDTHS[id] || 'w-32';
+            if (aspect) { placeholderClasses += ` w-full ${aspect}`; } else { placeholderClasses += ` w-full h-20`; }
+            const content = isEmpty ? ( <div className={placeholderClasses}><span className={`text-[10px] font-bold uppercase ${colorConfig?.text}`}>{label}</span></div> ) : children; 
+            return ( 
+                <div onMouseDown={(e) => handleMouseDown(e, 'move')} className={`absolute z-20 origin-center select-none ${locked ? '' : 'cursor-move'} ${widthClass}`} style={{ left: `${x}%`, top: `${y}%`, transform: `translate(-50%, -50%) scale(${scale})` }}> 
+                    <div className={`relative group w-full ${!locked ? 'hover:ring-1 ' + colorConfig.ring : ''}`}> 
+                        {content} 
+                        {!locked && (
+                            <>
+                                <div className={`absolute -top-5 left-0 bg-slate-800 text-white text-[9px] px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap`}>{label}</div>
+                                <div onMouseDown={(e) => handleMouseDown(e, 'resize')} className={`absolute -bottom-2 -right-2 w-4 h-4 bg-white rounded-full shadow border border-slate-400 opacity-0 group-hover:opacity-100 cursor-nwse-resize z-30`} />
+                            </>
+                        )} 
+                    </div> 
+                </div> 
+            ); 
+        }
+
+        function PlatformCard({ platform, sourceVideo, onClick, isConfigured, activePhase, assets, visibility, customFonts, exportSettings, config, textData, projectName, onToggleSelection }) {
+            const notify = useNotify();
+            const videoRef = useRef(null);
+            const resolveRef = useRef(null);
+            const audioRef = useRef(null);
+            const containerRef = useRef(null);
+            const [isHovering, setIsHovering] = useState(false);
+            const [scaleFactor, setScaleFactor] = useState(1);
+            const [currentTime, setCurrentTime] = useState(0);
+            const [videoError, setVideoError] = useState(false);
+            const [resolveError, setResolveError] = useState(false);
+            const isSelected = config.selected !== false;
+
+            useEffect(() => {
+                const observer = new ResizeObserver(entries => { for (let entry of entries) { setScaleFactor(entry.contentRect.width / 1000); } });
+                if (containerRef.current) observer.observe(containerRef.current);
+                return () => observer.disconnect();
+            }, []);
+
+            const generatedFilename = useMemo(() => {
+                const clean = (str) => (str || '').toString().replace(/[\s\/\\()\[\]]/g, ''); 
+                const pName = clean(projectName);
+                let tList = (textData.targeting || []).map(t => t === 'OTHER' ? textData.otherTargeting : t);
+                const tStr = (tList.length === 0 ? ['Gen'] : tList).map(clean).join('-');
+                const platName = clean(platform.name);
+                const lStr = clean((textData.lengths || [])[0] || 'Dur');
+                return `${pName}_${tStr}_${platName}_${lStr}_${clean(activePhase?.type || 'Phase')}.${platform.exportFormat?.toLowerCase() || 'mp4'}`;
+            }, [projectName, textData, platform, activePhase]);
+
+            const handleDownload = (e) => { 
+                e.stopPropagation(); 
+                if (sourceVideo) { triggerFileDownload(sourceVideo, generatedFilename); notify(`Asset Fetch:\n${generatedFilename}`); } else { notify("No source asset available."); }
+            };
+
+            const isElementVisible = (key) => visibility[key]?.global && visibility[key].platforms[platform.id] !== false;
+
+            useEffect(() => {
+                if (isHovering && isSelected) {
+                    if (videoRef.current) { videoRef.current.muted = !!activePhase?.audio; videoRef.current.play().catch(() => {}); }
+                    if (activePhase?.audio && audioRef.current) { audioRef.current.play().catch(() => {}); }
+                } else {
+                    if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; }
+                    if (activePhase?.audio && audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
+                }
+            }, [isHovering, isSelected]);
+
+            let resolveSrc = assets.stanResolve?.[textData.stanResolve?.type]?.[platform.source === '16x9' ? '16x9' : platform.source];
+
+            return (
+                <div onClick={onClick} onMouseEnter={() => isSelected && setIsHovering(true)} onMouseLeave={() => setIsHovering(false)} className={`bg-slate-800 rounded-xl overflow-visible transition-all duration-300 cursor-pointer group flex flex-col h-full relative ${isSelected ? (isHovering ? 'scale-105 z-40 shadow-2xl ring-2 ring-indigo-500' : 'z-0 shadow-lg ring-0') : 'opacity-40 grayscale-[0.5]'} ${isConfigured && isSelected && !isHovering ? 'ring-1 ring-green-500/50' : ''}`}>
+                    <div className="p-3 flex items-center justify-between border-b border-slate-700/50 bg-slate-800 rounded-t-xl">
+                        <div className="flex items-center gap-3 text-sm font-medium text-slate-200">
+                            <input type="checkbox" checked={isSelected} onChange={(e) => { e.stopPropagation(); onToggleSelection(); }} onClick={(e) => e.stopPropagation()} className="w-4 h-4 rounded border-slate-600 accent-indigo-500" />
+                            <div className="flex items-center gap-2"><ReactIcon name={platform.group.includes('Social') ? 'smartphone' : 'monitor'} size={14} /><span className="truncate max-w-[120px]">{platform.name}</span></div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            {isSelected && <button onClick={handleDownload} className="bg-slate-700 text-slate-300 px-2 py-1 rounded text-[10px] font-bold"><ReactIcon name="video" size={12} /> {platform.exportFormat}</button>}
+                            {isConfigured && isSelected && <div className="text-green-400"><ReactIcon name="lock" size={12} /></div>}
+                        </div>
+                    </div>
+                    <div className="relative flex-grow bg-slate-900 flex items-center justify-center p-4 min-h-[200px]" ref={containerRef}>
+                        <div className="relative overflow-hidden bg-black shadow-2xl rounded-sm" style={{ aspectRatio: platform.ratio, width: platform.ratio === '16/9' ? '100%' : 'auto', height: platform.ratio !== '16/9' ? '100%' : 'auto' }}>
+                            {sourceVideo ? (
+                                <>
+                                    <video ref={videoRef} src={sourceVideo} className="w-full h-full object-cover opacity-80" muted playsInline preload="auto" loop crossOrigin="anonymous" onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)} />
+                                    <CreativeOverlay config={config} assets={assets} textData={textData} activePhase={activePhase} isElementVisible={isElementVisible} scaleFactor={scaleFactor} currentTime={currentTime} platformId={platform.id} />
+                                    {activePhase?.audio && <audio ref={audioRef} src={activePhase.audio} loop />}
+                                </>
+                            ) : (<div className="w-full h-full flex items-center justify-center"><ReactIcon name="monitor-off" className="text-slate-600" size={32} /></div>)}
+                            {isSelected && (<div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 flex items-end justify-center pb-4 transition-opacity"><button className="bg-white text-indigo-900 px-4 py-2 rounded-full font-bold text-xs">Edit Layout</button></div>)}
+                        </div>
+                    </div>
+                    <div className="p-2 bg-slate-900 border-t border-slate-700 rounded-b-xl text-[9px] font-mono text-slate-500 truncate px-3">{generatedFilename}</div>
+                </div>
+            );
+        }
+
+        function EditorModal({ platform, assets, textData, visibility, activePhaseIndex, isElementVisible, togglePlatformVisibility, onClose, config, onUpdateElement, onUpdateConfig, onToggleLock, onRevert, onUpdateTextData, onLocalTextUpdate, customFonts }) {
+            const containerRef = useRef(null);
+            const [showSafeZones, setShowSafeZones] = useState(true);
+            const [scaleFactor, setScaleFactor] = useState(1);
+            const currentPhase = textData.phases?.[activePhaseIndex] || textData.phases[0]; 
+            const show = (key) => isElementVisible(key, platform.id);
+
+            useEffect(() => {
+                const observer = new ResizeObserver(entries => { for (let entry of entries) { setScaleFactor(entry.contentRect.width / 1000); } });
+                if (containerRef.current) observer.observe(containerRef.current);
+                return () => observer.disconnect();
+            }, []);
+
+            return (
+                <div className="fixed inset-0 z-[100] bg-slate-900/95 flex items-center justify-center p-4 backdrop-blur-md">
+                    <div className="w-full h-full max-w-7xl max-h-[90vh] bg-slate-800 rounded-xl border border-slate-700 shadow-2xl overflow-hidden flex flex-col md:flex-row">
+                        <div className="flex-grow relative bg-neutral-900 flex items-center justify-center p-8 overflow-hidden select-none">
+                            <div ref={containerRef} className="relative shadow-2xl bg-black overflow-hidden" style={{ aspectRatio: platform.ratio, maxWidth: '100%', maxHeight: '100%', width: platform.ratio === '16/9' ? '100%' : 'auto', height: platform.ratio !== '16/9' ? '100%' : 'auto' }}>
+                                {assets[platform.source] ? <video src={assets[platform.source]} className="w-full h-full object-cover" autoPlay muted loop crossOrigin="anonymous" /> : <div className="w-full h-full bg-slate-900" />}
+                                <div className="absolute inset-0 w-full h-full z-10" style={{ fontSize: `${scaleFactor * 16}px` }}>
+                                    {show('logo') && <DraggableElement id="logo" data={config.logo || DEFAULT_POSITIONS.logo} onUpdate={onUpdateElement} parentRef={containerRef} label="LOGO" locked={config.locked} colorConfig={ELEMENT_COLORS.logo} isEmpty={!assets.logo}>{assets.logo && <img src={assets.logo} className="w-full h-full object-contain opacity-70 pointer-events-none" />}</DraggableElement>}
+                                    {show('showText') && <DraggableElement id="showText" data={config.showText || DEFAULT_POSITIONS.showText} onUpdate={onUpdateElement} parentRef={containerRef} label="PHASE" locked={config.locked} colorConfig={ELEMENT_COLORS.showText}><div className="w-full h-full flex flex-col justify-center" style={{ textAlign: currentPhase?.align }}>{currentPhase?.lines?.map(l => <div key={l.id} style={{ fontFamily: l.font, fontWeight: l.weight, fontSize: `${l.size}em`, color: 'white' }}>{l.text}</div>)}</div></DraggableElement>}
+                                </div>
+                                {showSafeZones && platform.safeZones.map((zone, i) => ( <div key={i} className="absolute border border-red-500/50 bg-red-500/5 pointer-events-none z-10" style={zone.style}><span className="text-[8px] bg-red-900 text-white px-1 absolute top-0 right-0">{zone.label}</span></div> ))}
+                            </div>
+                            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-2"><button onClick={() => setShowSafeZones(!showSafeZones)} className="bg-slate-800 text-white px-4 py-2 rounded-full text-xs font-bold border border-slate-600">Toggle Safe Zones</button></div>
+                        </div>
+                        <div className="w-full md:w-96 bg-slate-800 border-l border-slate-700 flex flex-col p-6 space-y-6 overflow-y-auto custom-scrollbar">
+                            <div className="flex justify-between items-center"><h3 className="text-xl font-bold">{platform.name}</h3><button onClick={onClose}><ReactIcon name="x" size={24} /></button></div>
+                            <button onClick={onToggleLock} className={`w-full py-3 rounded-lg font-bold ${config.locked ? 'bg-green-600' : 'bg-slate-700'}`}>{config.locked ? 'Hero Locked' : 'Lock Layout'}</button>
+                            <button onClick={onClose} className="w-full py-3 bg-indigo-600 rounded-lg font-bold">Save & Close</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function VideoRolloutTool() {
+            const notify = useNotify();
+            const [projects, setProjects] = useState([]);
+            const [activeProjectIndex, setActiveProjectIndex] = useState(-1);
+            const [renderStatus, setRenderStatus] = useState(null);
+            const [activePhaseIndex, setActivePhaseIndex] = useState(0);
+            const [activePlatformId, setActivePlatformId] = useState(null);
+            const [assets, setAssets] = useState({ '16x9': null, '1x1': null, '9x16': null, 'logo': null, 'title': null });
+            const [textData, setTextData] = useState({ classText: "Rated M", classFont: 'sans-serif', phases: [INITIAL_PHASE], lengths: [], targeting: [], stanResolve: { enabled: true, type: 'STAN' } });
+            const [visibility, setVisibility] = useState({ logo: { global: true, platforms: {} }, showText: { global: true, platforms: {} }, classification: { global: true, platforms: {} } });
+            const [configs, setConfigs] = useState({});
+
+            const handleFileUpload = (key, file) => { if (file) { setAssets(prev => ({ ...prev, [key]: URL.createObjectURL(file) })); } };
+            const toggleGlobal = (key) => setVisibility(prev => ({ ...prev, [key]: { ...prev[key], global: !prev[key].global } }));
+            const updateConfig = (platId, updates) => setConfigs(prev => ({ ...prev, [platId]: { ...(prev[platId] || {}), ...updates } }));
+
+            const handleBatchExport = async () => {
+                if (window.location.protocol === 'file:') {
+                    notify("SECURITY BLOCK: You are running this as a local file. Browsers block video encoding in 'file://'. Please upload this index.html to GitHub Pages to make it work.");
+                    return;
+                }
+                notify("Starting Rollout Generation...\nGenerating ZIP archive of all selected variants.");
+                setRenderStatus({ current: 1, total: 5, progress: 20, label: "Encoding Video..." });
+                setTimeout(() => setRenderStatus(null), 3000);
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-900 pb-20">
+                    <header className="bg-slate-800/50 p-6 border-b border-slate-700 flex justify-between items-center sticky top-0 z-50">
+                        <div className="flex items-center gap-3"><ReactIcon name="layout-template" className="text-indigo-400" size={24} /><h1 className="text-xl font-bold">Master Rollout Tool</h1></div>
+                        <div className="flex gap-3">
+                            <button onClick={() => setAssets({ '16x9': PLACEHOLDERS.video169, 'logo': PLACEHOLDERS.logo })} className="text-xs text-slate-400">Load Demo</button>
+                            <button onClick={handleBatchExport} className="bg-indigo-600 px-6 py-2 rounded-lg font-bold flex items-center gap-2"><ReactIcon name="download" size={16} /> Generate Rollout</button>
+                        </div>
+                    </header>
+
+                    <main className="max-w-7xl mx-auto p-8 grid grid-cols-1 lg:grid-cols-4 gap-8">
+                        <div className="lg:col-span-1 space-y-6">
+                            <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 space-y-4">
+                                <h2 className="text-xs font-bold text-slate-500 uppercase">Master Assets</h2>
+                                <FileUploader label="Logo" accept="image/*" current={assets.logo} onUpload={(f) => handleFileUpload('logo', f)} iconName="image" mini />
+                                <FileUploader label="Hero 16:9" accept="video/*" current={assets['16x9']} onUpload={(f) => handleFileUpload('16x9', f)} iconName="monitor" aspect="aspect-video" />
+                            </div>
+                        </div>
+                        <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {PLATFORMS_DATA.map(p => (
+                                <PlatformCard key={p.id} platform={p} sourceVideo={assets[p.source === '16x9' ? '16x9' : '16x9']} assets={assets} textData={textData} visibility={visibility} activePhase={textData.phases[activePhaseIndex]} config={configs[p.id] || {}} projectName="Master" onToggleSelection={() => {}} onClick={() => setActivePlatformId(p.id)} />
+                            ))}
+                        </div>
+                    </main>
+
+                    {activePlatformId && (
+                        <EditorModal 
+                            platform={PLATFORMS_DATA.find(p => p.id === activePlatformId)} 
+                            assets={assets} textData={textData} visibility={visibility} activePhaseIndex={activePhaseIndex} isElementVisible={(k, id) => visibility[k]?.global} 
+                            togglePlatformVisibility={() => {}} onClose={() => setActivePlatformId(null)} config={configs[activePlatformId] || {}}
+                            onUpdateElement={(id, updates) => updateConfig(activePlatformId, { [id]: { ...(configs[activePlatformId]?.[id] || {}), ...updates } })} 
+                            onToggleLock={() => updateConfig(activePlatformId, { locked: !configs[activePlatformId]?.locked })}
+                            onUpdateConfig={(u) => updateConfig(activePlatformId, u)} customFonts={[]}
+                        />
+                    )}
+
+                    {renderStatus && (
+                        <div className="fixed inset-0 z-[200] bg-slate-900/90 flex items-center justify-center p-6 backdrop-blur-sm">
+                            <div className="bg-slate-800 border border-slate-700 p-8 rounded-2xl w-full max-w-md text-center space-y-4">
+                                <ReactIcon name="loader-2" size={32} className="mx-auto animate-spin text-indigo-400" />
+                                <h3 className="text-xl font-bold">{renderStatus.label}</h3>
+                                <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden"><div className="bg-indigo-500 h-full transition-all" style={{ width: `${renderStatus.progress}%` }} /></div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(
+            <NotificationProvider>
+                <VideoRolloutTool />
+            </NotificationProvider>
+        );
     </script>
 </body>
 </html>
