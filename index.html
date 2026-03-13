@@ -1,648 +1,1983 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video Rollout Tool</title>
-    <!-- Load Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Load React, ReactDOM, Babel (to run JSX), and Lucide Icons -->
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <style>
-        body { background-color: #0f172a; color: #f1f5f9; margin: 0; }
-        #root { min-height: 100vh; }
-        @keyframes shimmer {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(100%); }
-        }
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-    </style>
-</head>
-<body>
-    <div id="root"></div>
+import React, { useState, useRef, useEffect, useMemo, useCallback, createContext, useContext } from 'react';
+import * as Lucide from 'lucide-react';
 
-    <script type="text/babel">
-        const { useState, useRef, useEffect, useMemo, useCallback, createContext, useContext } = React;
+/**
+ * STABILITY NOTE: 
+ * We use FFmpeg v0.11.0 with a forced single-threaded core.
+ * This is the ONLY version that works in sandboxed environments 
+ * without specific COOP/COEP headers.
+ */
 
-        // --- HELPER: DYNAMIC ICON COMPONENT ---
-        const Icon = ({ name, size = 16, className = "" }) => {
-            const toPascalCase = (str) => {
-                return str
-                    .split('-')
-                    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-                    .join('');
-            };
-            const iconName = toPascalCase(name);
-            // Lucide icons are available globally via the CDN script
-            const IconComponent = lucide.icons[iconName] || lucide.icons.HelpCircle;
-            
-            // Create the icon using Lucide's create function for React
-            return (
-                <span dangerouslySetInnerHTML={{ 
-                    __html: lucide.createIcons({
-                        icons: { [iconName]: IconComponent },
-                        attrs: { strokeWidth: 2, width: size, height: size, class: className }
-                    }) 
-                }} />
-            );
-        };
+// --- HELPER: DYNAMIC ICON COMPONENT ---
+const Icon = ({ name, size = 16, className = "" }) => {
+  const toPascalCase = (str) => {
+    return str
+      .split('-')
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join('');
+  };
+  
+  const iconName = toPascalCase(name);
+  const IconComponent = Lucide[iconName] || Lucide.HelpCircle;
+  return <IconComponent size={size} className={className} />;
+};
 
-        // Standard React Icon fallback since lucide.createIcons returns DOM strings
-        const ReactIcon = ({ name, size = 16, className = "" }) => {
-            const toPascalCase = (str) => str.split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
-            const iconName = toPascalCase(name);
-            const LucideIcon = lucide.icons[iconName] || lucide.icons.HelpCircle;
-            
-            // We'll use a simple wrapper to make it act like a component
-            const svgData = LucideIcon[2].map(([tag, attrs]) => {
-                const attrString = Object.entries(attrs).map(([k, v]) => `${k}="${v}"`).join(' ');
-                return `<${tag} ${attrString} />`;
-            }).join('');
+// --- CONFIGURATION CONSTANTS ---
+const ELEMENT_COLORS = {
+  logo: { border: 'border-blue-500', bg: 'bg-blue-500/20', text: 'text-blue-400', ring: 'ring-blue-500', hex: '#60a5fa' },
+  title: { border: 'border-fuchsia-500', bg: 'bg-fuchsia-500/20', text: 'text-fuchsia-400', ring: 'ring-fuchsia-500', hex: '#e879f9' },
+  titleSquare: { border: 'border-pink-500', bg: 'bg-pink-500/20', text: 'text-pink-400', ring: 'ring-pink-500', hex: '#ec4899' },
+  titleHrz: { border: 'border-purple-500', bg: 'bg-purple-500/20', text: 'text-purple-400', ring: 'ring-purple-500', hex: '#a855f7' },
+  titleVertical: { border: 'border-violet-500', bg: 'bg-violet-500/20', text: 'text-violet-400', ring: 'ring-violet-500', hex: '#8b5cf6' },
+  classification: { border: 'border-amber-500', bg: 'bg-amber-500/20', text: 'text-amber-400', ring: 'ring-amber-500', hex: '#fbbf24' },
+  showText: { border: 'border-emerald-500', bg: 'bg-emerald-500/20', text: 'text-emerald-400', ring: 'ring-emerald-500', hex: '#34d399' },
+  endboardLogo: { border: 'border-orange-500', bg: 'bg-orange-500/20', text: 'text-orange-400', ring: 'ring-orange-500', hex: '#f97316' },
+  endboardText: { border: 'border-red-500', bg: 'bg-red-500/20', text: 'text-red-400', ring: 'ring-red-500', hex: '#ef4444' },
+};
 
-            return (
-                <svg 
-                    width={size} 
-                    height={size} 
-                    viewBox="0 0 24 24" 
-                    fill="none" 
-                    stroke="currentColor" 
-                    strokeWidth="2" 
-                    strokeLinecap="round" 
-                    strokeLinejoin="round" 
-                    className={className}
-                    dangerouslySetInnerHTML={{ __html: svgData }}
-                />
-            );
-        };
+const DEFAULT_POSITIONS = {
+  logo: { x: 10, y: 10, scale: 1 },
+  title: { x: 50, y: 20, scale: 1 },
+  titleSquare: { x: 50, y: 50, scale: 1 },
+  titleHrz: { x: 50, y: 50, scale: 1 },
+  titleVertical: { x: 50, y: 50, scale: 1 },
+  classification: { x: 15, y: 85, scale: 1 },
+  showText: { x: 50, y: 50, scale: 1 },
+  endboardLogo: { x: 50, y: 40, scale: 1 },
+  endboardText: { x: 50, y: 65, scale: 1 }
+};
 
-        // --- CONFIGURATION CONSTANTS ---
-        const ELEMENT_COLORS = {
-            logo: { border: 'border-blue-500', bg: 'bg-blue-500/20', text: 'text-blue-400', ring: 'ring-blue-500', hex: '#60a5fa' },
-            title: { border: 'border-fuchsia-500', bg: 'bg-fuchsia-500/20', text: 'text-fuchsia-400', ring: 'ring-fuchsia-500', hex: '#e879f9' },
-            titleSquare: { border: 'border-pink-500', bg: 'bg-pink-500/20', text: 'text-pink-400', ring: 'ring-pink-500', hex: '#ec4899' },
-            titleHrz: { border: 'border-purple-500', bg: 'bg-purple-500/20', text: 'text-purple-400', ring: 'ring-purple-500', hex: '#a855f7' },
-            titleVertical: { border: 'border-violet-500', bg: 'bg-violet-500/20', text: 'text-violet-400', ring: 'ring-violet-500', hex: '#8b5cf6' },
-            classification: { border: 'border-amber-500', bg: 'bg-amber-500/20', text: 'text-amber-400', ring: 'ring-amber-500', hex: '#fbbf24' },
-            showText: { border: 'border-emerald-500', bg: 'bg-emerald-500/20', text: 'text-emerald-400', ring: 'ring-emerald-500', hex: '#34d399' },
-            endboardLogo: { border: 'border-orange-500', bg: 'bg-orange-500/20', text: 'text-orange-400', ring: 'ring-orange-500', hex: '#f97316' },
-            endboardText: { border: 'border-red-500', bg: 'bg-red-500/20', text: 'text-red-400', ring: 'ring-red-500', hex: '#ef4444' },
-        };
+const ELEMENT_WIDTHS = {
+  logo: 'w-[25%]',
+  title: 'w-[50%]',
+  titleSquare: 'w-[40%]',
+  titleHrz: 'w-[50%]',
+  titleVertical: 'w-[45%]',
+  classification: 'w-[20%]',
+  showText: 'w-[60%]',
+  endboardLogo: 'w-[40%]',
+  endboardText: 'w-[60%]'
+};
 
-        const DEFAULT_POSITIONS = {
-            logo: { x: 10, y: 10, scale: 1 },
-            title: { x: 50, y: 20, scale: 1 },
-            titleSquare: { x: 50, y: 50, scale: 1 },
-            titleHrz: { x: 50, y: 50, scale: 1 },
-            titleVertical: { x: 50, y: 50, scale: 1 },
-            classification: { x: 15, y: 85, scale: 1 },
-            showText: { x: 50, y: 50, scale: 1 },
-            endboardLogo: { x: 50, y: 40, scale: 1 },
-            endboardText: { x: 50, y: 65, scale: 1 }
-        };
+const INGEST_MODULES = [
+  { id: 'hero_169', label: 'Hero 16:9', colSpan: 'lg:col-span-5' },
+  { id: 'hero_1x1', label: 'Hero 1:1', colSpan: 'lg:col-span-2' },
+  { id: 'hero_9x16', label: 'Hero 9:16', colSpan: 'lg:col-span-2' },
+  { id: 'hero_4x5', label: 'Hero 4:5', colSpan: 'lg:col-span-2' },
+  { id: 'stan_resolve_section', label: 'Stan Resolve', colSpan: 'lg:col-span-11' }, 
+  { id: 'endboard_config', label: 'Endboard', colSpan: 'lg:col-span-3' }, 
+  { id: 'campaign_length', label: 'Lengths', colSpan: 'lg:col-span-3' },
+  { id: 'brand_assets', label: 'Logo & Title', colSpan: 'lg:col-span-3' },
+  { id: 'classification', label: 'Classification', colSpan: 'lg:col-span-3' },
+  { id: 'targeting', label: 'Targeting', colSpan: 'lg:col-span-3' },
+  { id: 'phase_messaging', label: 'Phase Messaging', colSpan: 'lg:col-span-3' },
+  { id: 'brand_fonts', label: 'Brand Fonts', colSpan: 'lg:col-span-3' }
+];
 
-        const ELEMENT_WIDTHS = {
-            logo: 'w-[25%]',
-            title: 'w-[50%]',
-            titleSquare: 'w-[40%]',
-            titleHrz: 'w-[50%]',
-            titleVertical: 'w-[45%]',
-            classification: 'w-[20%]',
-            showText: 'w-[60%]',
-            endboardLogo: 'w-[40%]',
-            endboardText: 'w-[60%]'
-        };
+const STAN_RESOLVE_TYPES = [
+  { id: 'STAN', label: 'STAN' },
+  { id: 'STAN_SPORT', label: 'STAN SPORT' },
+  { id: 'STAN_PPV', label: 'STAN PPV' }
+];
 
-        const INGEST_MODULES = [
-            { id: 'hero_169', label: 'Hero 16:9', colSpan: 'lg:col-span-5' },
-            { id: 'hero_1x1', label: 'Hero 1:1', colSpan: 'lg:col-span-2' },
-            { id: 'hero_9x16', label: 'Hero 9:16', colSpan: 'lg:col-span-2' },
-            { id: 'hero_4x5', label: 'Hero 4:5', colSpan: 'lg:col-span-2' },
-            { id: 'stan_resolve_section', label: 'Stan Resolve', colSpan: 'lg:col-span-11' }, 
-            { id: 'endboard_config', label: 'Endboard', colSpan: 'lg:col-span-3' }, 
-            { id: 'campaign_length', label: 'Lengths', colSpan: 'lg:col-span-3' },
-            { id: 'brand_assets', label: 'Logo & Title', colSpan: 'lg:col-span-3' },
-            { id: 'classification', label: 'Classification', colSpan: 'lg:col-span-3' },
-            { id: 'targeting', label: 'Targeting', colSpan: 'lg:col-span-3' },
-            { id: 'phase_messaging', label: 'Phase Messaging', colSpan: 'lg:col-span-3' },
-            { id: 'brand_fonts', label: 'Brand Fonts', colSpan: 'lg:col-span-3' }
-        ];
+const AU_RATINGS = [
+  { code: 'G', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/05/Australian_Classification_G.svg/1200px-Australian_Classification_G.svg.png', text: 'General', color: '#00a54f', txtColor: 'white' },
+  { code: 'PG', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/ba/Australian_Classification_PG.svg/1200px-Australian_Classification_PG.svg.png', text: 'Parental Guidance', color: '#fdb913', txtColor: 'black' },
+  { code: 'M', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/85/Australian_Classification_M.svg/1200px-Australian_Classification_M.svg.png', text: 'Mature', color: '#0093d0', txtColor: 'white' },
+  { code: 'MA15+', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/22/Australian_Classification_MA15%2B.svg/1200px-Australian_Classification_MA15%2B.svg.png', text: 'Mature Accompanied', color: '#ed1b24', txtColor: 'white' },
+  { code: 'R18+', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b6/Australian_Classification_R18%2B.svg/1200px-Australian_Classification_R18%2B.svg.png', text: 'Restricted', color: '#000000', txtColor: 'white' },
+  { code: 'CTC_Square', img: 'CTC_Square.png', text: 'Check the Classification - Square', color: '#f58220', txtColor: 'black' },
+  { code: 'CTC_HRZ', img: 'CTC_HRZ.png', text: 'Check the Classification - Horizontal', color: '#f58220', txtColor: 'black' }
+];
 
-        const STAN_RESOLVE_TYPES = [
-            { id: 'STAN', label: 'STAN' },
-            { id: 'STAN_SPORT', label: 'STAN SPORT' },
-            { id: 'STAN_PPV', label: 'STAN PPV' }
-        ];
+const PHASE_TYPES = [
+  { code: 'PP', name: 'Pre Promote' },
+  { code: 'WL', name: 'Week Launch' },
+  { code: 'DL', name: 'Day Launch' },
+  { code: 'TM', name: 'Tomorrow' },
+  { code: 'TD', name: 'Today' },
+  { code: 'TN', name: 'Tonight' },
+  { code: 'SN', name: 'Stream Now' },
+  { code: 'EE', name: 'Every Episode' },
+  { code: 'Catch up', name: 'Catch Up' }
+];
 
-        const AU_RATINGS = [
-            { code: 'G', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/05/Australian_Classification_G.svg/1200px-Australian_Classification_G.svg.png', text: 'General', color: '#00a54f', txtColor: 'white' },
-            { code: 'PG', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/ba/Australian_Classification_PG.svg/1200px-Australian_Classification_PG.svg.png', text: 'Parental Guidance', color: '#fdb913', txtColor: 'black' },
-            { code: 'M', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/85/Australian_Classification_M.svg/1200px-Australian_Classification_M.svg.png', text: 'Mature', color: '#0093d0', txtColor: 'white' },
-            { code: 'MA15+', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/22/Australian_Classification_MA15%2B.svg/1200px-Australian_Classification_MA15%2B.svg.png', text: 'Mature Accompanied', color: '#ed1b24', txtColor: 'white' },
-            { code: 'R18+', img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b6/Australian_Classification_R18%2B.svg/1200px-Australian_Classification_R18%2B.svg.png', text: 'Restricted', color: '#000000', txtColor: 'white' },
-            { code: 'CTC_Square', img: 'CTC_Square.png', text: 'Check the Classification - Square', color: '#f58220', txtColor: 'black' },
-            { code: 'CTC_HRZ', img: 'CTC_HRZ.png', text: 'Check the Classification - Horizontal', color: '#f58220', txtColor: 'black' }
-        ];
+const LENGTH_OPTIONS = [
+  { val: '30', label: '30' },
+  { val: '15', label: '15' },
+  { val: '6', label: '6' },
+  { val: '10', label: '10' },
+  { val: '60', label: '60' },
+  { val: 'OTHER', label: 'OTHER' }
+];
 
-        const PHASE_TYPES = [
-            { code: 'PP', name: 'Pre Promote' },
-            { code: 'WL', name: 'Week Launch' },
-            { code: 'DL', name: 'Day Launch' },
-            { code: 'TM', name: 'Tomorrow' },
-            { code: 'TD', name: 'Today' },
-            { code: 'TN', name: 'Tonight' },
-            { code: 'SN', name: 'Stream Now' },
-            { code: 'EE', name: 'Every Episode' },
-            { code: 'Catch up', name: 'Catch Up' }
-        ];
+const TARGETING_OPTIONS = [
+  { val: 'Hero', label: 'Hero' },
+  { val: 'Broad', label: 'Broad' },
+  { val: 'Male', label: 'Male' },
+  { val: 'Female', label: 'Female' },
+  { val: 'Acclaim', label: 'Acclaim' },
+  { val: 'OTHER', label: 'OTHER' }
+];
 
-        const LENGTH_OPTIONS = [
-            { val: '30', label: '30' },
-            { val: '15', label: '15' },
-            { val: '6', label: '6' },
-            { val: '10', label: '10' },
-            { val: '60', label: '60' },
-            { val: 'OTHER', label: 'OTHER' }
-        ];
+const CATEGORIES = [
+  { id: 'bvod', name: 'BVOD' },
+  { id: 'online_video', name: 'Online Video' },
+  { id: 'partner', name: 'Partner' },
+  { id: 'platform', name: 'Platform' },
+  { id: 'social', name: 'Social' },
+  { id: 'tv', name: 'TV' }
+];
 
-        const TARGETING_OPTIONS = [
-            { val: 'Hero', label: 'Hero' },
-            { val: 'Broad', label: 'Broad' },
-            { val: 'Male', label: 'Male' },
-            { val: 'Female', label: 'Female' },
-            { val: 'Acclaim', label: 'Acclaim' },
-            { val: 'OTHER', label: 'OTHER' }
-        ];
+const EXPORT_PRESETS = [
+  { id: 'break_compile', name: 'BreakCompile', ext: 'epr' },
+  { id: 'broadcast', name: 'Broadcast', ext: 'epr' },
+  { id: 'bvod_high', name: 'BVOD_High', ext: 'epr' },
+  { id: 'bvod_low', name: 'BVOD_Low', ext: 'epr' },
+  { id: 'bvod_medium', name: 'BVOD_Medium', ext: 'epr' },
+  { id: 'platform', name: 'Platform', ext: 'epr' },
+  { id: 'prores', name: 'ProRes', ext: 'epr' },
+  { id: 'publicity', name: 'Publicity', ext: 'epr' },
+  { id: 'social', name: 'Social', ext: 'epr' }
+];
 
-        const CATEGORIES = [
-            { id: 'bvod', name: 'BVOD' },
-            { id: 'online_video', name: 'Online Video' },
-            { id: 'partner', name: 'Partner' },
-            { id: 'platform', name: 'Platform' },
-            { id: 'social', name: 'Social' },
-            { id: 'tv', name: 'TV' }
-        ];
+const STANDARD_169_SAFE_ZONES = [
+  { label: 'Action Safe', style: { inset: '5%', border: '2px dashed rgba(255,0,0,0.5)', background: 'transparent' } }, 
+  { label: 'Title Safe', style: { inset: '10%', border: '2px dotted rgba(255,255,0,0.5)', background: 'transparent' } }
+];
 
-        const EXPORT_PRESETS = [
-            { id: 'break_compile', name: 'BreakCompile', ext: 'epr' },
-            { id: 'broadcast', name: 'Broadcast', ext: 'epr' },
-            { id: 'bvod_high', name: 'BVOD_High', ext: 'epr' },
-            { id: 'bvod_low', name: 'BVOD_Low', ext: 'epr' },
-            { id: 'bvod_medium', name: 'BVOD_Medium', ext: 'epr' },
-            { id: 'platform', name: 'Platform', ext: 'epr' },
-            { id: 'prores', name: 'ProRes', ext: 'epr' },
-            { id: 'publicity', name: 'Publicity', ext: 'epr' },
-            { id: 'social', name: 'Social', ext: 'epr' }
-        ];
+const PLATFORMS_DATA = [
+  { id: 'tiktok_topview', name: 'TikTok TopView', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'TikTok Premium TopView. Avoid bottom CTA and top-right skip buttons.', safeZones: [{ label: 'Bottom CTA Area', style: { left: 0, bottom: 0, width: '100%', height: '22%', background: 'rgba(255,0,0,0.1)' } }, { label: 'Top Navigation', style: { left: 0, top: 0, width: '100%', height: '10%' } }, { label: 'Right Interaction', style: { right: 0, bottom: '22%', width: '15%', height: '40%' } }] },
+  { id: 'reels', name: 'Instagram Reels', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'Instagram Reel format. UI overlays on right and bottom.', safeZones: [{ label: 'Right Interaction', style: { right: 0, bottom: '15%', width: '15%', height: '40%' } }, { label: 'Bottom Caption', style: { left: 0, bottom: 0, width: '100%', height: '25%' } }, { label: 'Top Nav', style: { left: 0, top: 0, width: '100%', height: '8%' } }] },
+  { id: 'tiktok', name: 'TikTok', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'TikTok standard. Critical to avoid right-side buttons and bottom info.', safeZones: [{ label: 'Right Buttons', style: { right: 0, bottom: '20%', width: '13%', height: '50%' } }, { label: 'Bottom Info', style: { left: 0, bottom: 0, width: '100%', height: '20%' } }, { label: 'Top Tabs', style: { left: 0, top: 0, width: '100%', height: '10%' } }] },
+  { id: 'ig_story', name: 'IG Stories', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: '15s Vertical. Leave space for reply field.', safeZones: [{ label: 'Top Bar', style: { left: 0, top: 0, width: '100%', height: '8%' } }, { label: 'Reply Field', style: { left: 0, bottom: 0, width: '100%', height: '15%' } }] },
+  { id: 'yt_shorts', name: 'YouTube Shorts', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'Vertical feed. Right side buttons critical.', safeZones: [{ label: 'Right Action Bar', style: { right: 0, bottom: '15%', width: '15%', height: '50%' } }, { label: 'Title Area', style: { left: 0, bottom: 0, width: '100%', height: '15%' } }] },
+  { id: 'tvc', name: 'TVC (Television)', group: 'Television', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'Broadcast standard. High bitrate.', safeZones: STANDARD_169_SAFE_ZONES },
+  { id: 'foxtel', name: 'Foxtel', group: 'Partner', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'Foxtel Partner variation. 16:9 Broadcast safe.', safeZones: STANDARD_169_SAFE_ZONES },
+  { id: 'hubbl', name: 'Hubbl', group: 'Partner', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'Hubbl Partner variation. 16:9 Broadcast safe.', safeZones: STANDARD_169_SAFE_ZONES },
+  { id: 'google_169', name: 'Google', group: 'Partner', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'Google Partner variation. 16:9 safe zones.', safeZones: STANDARD_169_SAFE_ZONES },
+  { id: 'amazon_169', name: 'Amazon', group: 'Partner', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'Amazon Partner variation. 16:9 safe zones.', safeZones: STANDARD_169_SAFE_ZONES },
+  { id: 'bvod_high', name: 'BVOD High', group: 'Television', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'High Bitrate BVOD delivery.', safeZones: STANDARD_169_SAFE_ZONES },
+  { id: 'bvod_med', name: 'BVOD Medium', group: 'Television', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'Medium Bitrate BVOD delivery.', safeZones: STANDARD_169_SAFE_ZONES },
+  { id: 'bvod_low', name: 'BVOD Low', group: 'Television', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'Low Bitrate BVOD delivery.', safeZones: STANDARD_169_SAFE_ZONES },
+  { id: 'yt_landscape', name: 'YouTube / Pre-roll', group: 'Performance', source: '16x9', ratio: '16/9', exportFormat: 'MP4', description: 'Standard 16:9. Watch for Skip Ad.', safeZones: [{ label: 'Skip Button', style: { right: 0, bottom: '15%', width: '18%', height: '15%' } }, { label: 'Seek Bar', style: { left: 0, bottom: 0, width: '100%', height: '8%' } }, { label: 'More Info', style: { left: 0, bottom: '10%', width: '20%', height: '10%' } }] },
+  { id: 'yt_trailers', name: 'YouTube Trailers', group: 'Performance', source: '16x9', ratio: '16/9', exportFormat: 'MP4', description: 'Channel Trailer. Central info key.', safeZones: [{ label: 'End Screen', style: { right: '2%', top: '2%', width: '40%', height: '40%', border: '2px dashed rgba(255,255,0,0.3)' } }] },
+  { id: 'ctv_bvod', name: 'CTV / BVOD', group: 'Television', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'Big Screen. TV Safe boundaries.', safeZones: STANDARD_169_SAFE_ZONES },
+  { id: 'organic_social_169', name: 'Organic Social', group: 'Social', source: '16x9', ratio: '16/9', exportFormat: 'MP4', description: 'Standard landscape for social feeds.', safeZones: [{ label: 'General Safe', style: { inset: '5%', border: '1px dashed rgba(255,255,255,0.3)', background: 'transparent' } }] },
+  { id: 'billboards', name: 'Digital Billboards', group: 'OOH', source: '16x9', ratio: '16/9', exportFormat: 'MP4', description: 'Large format. High contrast.', safeZones: [{ label: 'Edge Safe', style: { inset: '2%', border: '2px solid rgba(255,0,0,0.5)', background: 'transparent' } }] },
+  { id: 'publicity', name: 'Publicity / PR', group: 'Press', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'Clean feed for press.', safeZones: [{ label: 'Ticker Safe', style: { left: 0, bottom: 0, width: '100%', height: '12%' } }, { label: 'Corner Logo', style: { right: 0, top: 0, width: '15%', height: '15%' } }] },
+  { id: 'social_portrait', name: 'Social Portrait (4:5)', group: 'Social', source: '4x5', ratio: '4/5', exportFormat: 'MP4', description: 'Optimized feed portrait.', safeZones: [{ label: 'Caption Area', style: { left: 0, bottom: 0, width: '100%', height: '15%' } }] },
+  { id: 'fb_feed', name: 'Facebook/IG Feed', group: 'Social', source: '1x1', ratio: '1/1', exportFormat: 'MP4', description: 'Square 1:1.', safeZones: [{ label: 'Bottom Action', style: { left: 0, bottom: 0, width: '100%', height: '8%' } }] }
+];
 
-        const PLATFORMS_DATA = [
-            { id: 'tiktok_topview', name: 'TikTok TopView', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'TikTok Premium TopView. Avoid bottom CTA and top-right skip buttons.', safeZones: [{ label: 'Bottom CTA Area', style: { left: 0, bottom: 0, width: '100%', height: '22%', background: 'rgba(255,0,0,0.1)' } }, { label: 'Top Navigation', style: { left: 0, top: 0, width: '100%', height: '10%' } }, { label: 'Right Interaction', style: { right: 0, bottom: '22%', width: '15%', height: '40%' } }] },
-            { id: 'reels', name: 'Instagram Reels', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'Instagram Reel format. UI overlays on right and bottom.', safeZones: [{ label: 'Right Interaction', style: { right: 0, bottom: '15%', width: '15%', height: '40%' } }, { label: 'Bottom Caption', style: { left: 0, bottom: 0, width: '100%', height: '25%' } }, { label: 'Top Nav', style: { left: 0, top: 0, width: '100%', height: '8%' } }] },
-            { id: 'tiktok', name: 'TikTok', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'TikTok standard. Critical to avoid right-side buttons and bottom info.', safeZones: [{ label: 'Right Buttons', style: { right: 0, bottom: '20%', width: '13%', height: '50%' } }, { label: 'Bottom Info', style: { left: 0, bottom: 0, width: '100%', height: '20%' } }, { label: 'Top Tabs', style: { left: 0, top: 0, width: '100%', height: '10%' } }] },
-            { id: 'ig_story', name: 'IG Stories', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: '15s Vertical. Leave space for reply field.', safeZones: [{ label: 'Top Bar', style: { left: 0, top: 0, width: '100%', height: '8%' } }, { label: 'Reply Field', style: { left: 0, bottom: 0, width: '100%', height: '15%' } }] },
-            { id: 'yt_shorts', name: 'YouTube Shorts', group: 'Social Vertical', source: '9x16', ratio: '9/16', exportFormat: 'MP4', description: 'Vertical feed. Right side buttons critical.', safeZones: [{ label: 'Right Action Bar', style: { right: 0, bottom: '15%', width: '15%', height: '50%' } }, { label: 'Title Area', style: { left: 0, bottom: 0, width: '100%', height: '15%' } }] },
-            { id: 'tvc', name: 'TVC (Television)', group: 'Television', source: '16x9', ratio: '16/9', exportFormat: 'MOV', description: 'Broadcast standard. High bitrate.', safeZones: [{ label: 'Action Safe', style: { inset: '5%', border: '2px dashed rgba(255,0,0,0.5)' } }] },
-            { id: 'organic_social_169', name: 'Organic Social', group: 'Social', source: '16x9', ratio: '16/9', exportFormat: 'MP4', description: 'Standard landscape for social feeds.', safeZones: [{ label: 'General Safe', style: { inset: '5%', border: '1px dashed rgba(255,255,255,0.3)' } }] },
-            { id: 'fb_feed', name: 'Facebook/IG Feed', group: 'Social', source: '1x1', ratio: '1/1', exportFormat: 'MP4', description: 'Square 1:1.', safeZones: [{ label: 'Bottom Action', style: { left: 0, bottom: 0, width: '100%', height: '8%' } }] }
-        ];
+const PLACEHOLDERS = {
+  video169: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+  video916: "https://assets.mixkit.co/videos/preview/mixkit-girl-in-neon-sign-1232-large.mp4",
+  video11: "https://assets.mixkit.co/videos/preview/mixkit-red-frog-on-a-log-1487-large.mp4",
+  video45: "https://assets.mixkit.co/videos/preview/mixkit-vertical-shot-of-a-stream-in-a-forest-4253-large.mp4",
+  logo: "https://via.placeholder.com/150x50/ffffff/000000?text=LOGO",
+  title: "https://via.placeholder.com/300x100/ffffff/000000?text=TITLE+TREATMENT",
+  classIcon: "https://via.placeholder.com/50x50/ff0000/ffffff?text=M"
+};
 
-        const INITIAL_PHASE = { 
-            id: 1,
-            type: 'PP', 
-            audio: null, 
-            lines: [
-                { id: 101, text: "Stream New", weight: '700', size: 1.2, font: 'sans-serif' }, 
-                { id: 102, text: "Episodes Now", weight: '400', size: 1.0, font: 'sans-serif' }
-            ], 
-            align: 'center' 
-        };
+const INITIAL_PHASE = { 
+  id: 1,
+  type: 'PP', 
+  audio: null, 
+  lines: [
+    { id: 101, text: "Stream New", weight: '700', size: 1.2, font: 'sans-serif' }, 
+    { id: 102, text: "Episodes Now", weight: '400', size: 1.0, font: 'sans-serif' }
+  ], 
+  align: 'center' 
+};
 
-        const parseTimeCode = (tc) => {
-            if (!tc) return 0;
-            const parts = tc.split(/[:\-\.]/).map(Number);
-            if (parts.length < 3) return 0;
-            const [min, sec, frames] = parts;
-            return (min * 60) + sec + (frames / 25);
-        };
+// --- UTILITIES ---
+const parseTimeCode = (tc) => {
+  if (!tc) return 0;
+  const parts = tc.split(/[:\-\.]/).map(Number);
+  if (parts.length < 3) return 0;
+  const [min, sec, frames] = parts;
+  return (min * 60) + sec + (frames / 25);
+};
 
-        const triggerFileDownload = (url, filename) => {
-            const link = document.createElement('a');
-            link.href = url;
-            link.setAttribute('download', filename);
-            link.setAttribute('target', '_blank');
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        };
+const triggerFileDownload = (url, filename) => {
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', filename);
+  link.setAttribute('target', '_blank');
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+};
 
-        const NotificationContext = createContext();
+// --- GLOBAL NOTIFICATION SYSTEM ---
+const NotificationContext = createContext();
 
-        function NotificationProvider({ children }) {
-            const [notifications, setNotifications] = useState([]);
-            const notify = (msg) => {
-                const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-                setNotifications(prev => [...prev, { id, msg }]);
-                setTimeout(() => {
-                    setNotifications(prev => prev.filter(n => n.id !== id));
-                }, 10000);
-            };
+function NotificationProvider({ children }) {
+  const [notifications, setNotifications] = useState([]);
+  const notify = (msg) => {
+    const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    setNotifications(prev => [...prev, { id, msg }]);
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    }, 6000);
+  };
 
-            return (
-                <NotificationContext.Provider value={notify}>
-                    {children}
-                    <div className="fixed top-4 right-4 z-[9999] pointer-events-none flex flex-col gap-2">
-                        {notifications.map(n => (
-                            <div key={n.id} className="bg-slate-800 border-l-4 border-indigo-500 text-slate-100 p-4 rounded shadow-2xl pointer-events-auto min-w-[300px] max-w-[450px] animate-in fade-in slide-in-from-right-10 duration-300">
-                                <div className="text-xs font-bold text-indigo-400 mb-1 uppercase tracking-wider">System Alert</div>
-                                <div className="text-sm whitespace-pre-line leading-relaxed max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">{n.msg}</div>
-                            </div>
-                        ))}
-                    </div>
-                </NotificationContext.Provider>
-            );
-        }
+  return (
+    <NotificationContext.Provider value={notify}>
+      {children}
+      <style>{`
+        @keyframes shimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(100%); }
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: rgba(0,0,0,0.1);
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: rgba(255,255,255,0.1);
+          border-radius: 10px;
+        }
+      `}</style>
+      <div className="fixed top-4 right-4 z-[9999] pointer-events-none flex flex-col gap-2">
+        {notifications.map(n => (
+          <div key={n.id} className="bg-slate-800 border-l-4 border-indigo-500 text-slate-100 p-4 rounded shadow-2xl pointer-events-auto min-w-[300px] max-w-[450px] animate-in fade-in slide-in-from-right-10 duration-300">
+            <div className="text-xs font-bold text-indigo-400 mb-1 uppercase tracking-wider">System Alert</div>
+            <div className="text-sm whitespace-pre-line leading-relaxed max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">{n.msg}</div>
+          </div>
+        ))}
+      </div>
+    </NotificationContext.Provider>
+  );
+}
 
-        const useNotify = () => useContext(NotificationContext);
+const useNotify = () => useContext(NotificationContext);
 
-        function AlignmentControl({ value, onChange }) {
-            return (
-                <div className="flex bg-slate-900 rounded border border-slate-600 p-0.5 flex-shrink-0">
-                    <button onClick={() => onChange('left')} className={`p-1 rounded transition-colors ${value === 'left' ? 'bg-slate-700 text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}><ReactIcon name="align-left" size={12} /></button>
-                    <button onClick={() => onChange('center')} className={`p-1 rounded transition-colors ${value === 'center' ? 'bg-slate-700 text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}><ReactIcon name="align-center" size={12} /></button>
-                    <button onClick={() => onChange('right')} className={`p-1 rounded transition-colors ${value === 'right' ? 'bg-slate-700 text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}><ReactIcon name="align-right" size={12} /></button>
-                </div>
-            );
-        }
+// --- SHARED COMPONENTS ---
+function AlignmentControl({ value, onChange }) {
+  return (
+    <div className="flex bg-slate-900 rounded border border-slate-600 p-0.5 flex-shrink-0">
+      <button onClick={() => onChange('left')} className={`p-1 rounded transition-colors ${value === 'left' ? 'bg-slate-700 text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}><Icon name="align-left" size={12} /></button>
+      <button onClick={() => onChange('center')} className={`p-1 rounded transition-colors ${value === 'center' ? 'bg-slate-700 text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}><Icon name="align-center" size={12} /></button>
+      <button onClick={() => onChange('right')} className={`p-1 rounded transition-colors ${value === 'right' ? 'bg-slate-700 text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}><Icon name="align-right" size={12} /></button>
+    </div>
+  );
+}
 
-        function FileUploader({ label, accept, current, onUpload, iconName, aspect = 'aspect-square', mini = false, tiny = false, isIncluded = true, highlightColor }) { 
-            const inputRef = useRef(null); 
-            const [hasError, setHasError] = useState(false);
-            const heightClass = mini || tiny ? (tiny ? 'h-full' : 'h-24') : 'w-full'; 
-            const borderColorClass = isIncluded && highlightColor ? highlightColor : (current ? 'border-indigo-500/50' : 'border-slate-700'); 
-            
-            useEffect(() => { setHasError(false); }, [current]);
+function FileUploader({ label, accept, current, onUpload, iconName, aspect = 'aspect-square', mini = false, tiny = false, isIncluded = true, highlightColor }) { 
+  const inputRef = useRef(null); 
+  const [hasError, setHasError] = useState(false);
+  const heightClass = mini || tiny ? (tiny ? 'h-full' : 'h-24') : 'w-full'; 
+  const borderColorClass = isIncluded && highlightColor ? highlightColor : (current ? 'border-indigo-500/50' : 'border-slate-700'); 
+  
+  useEffect(() => { setHasError(false); }, [current]);
 
-            return ( 
-                <div className={`relative group ${heightClass} ${!isIncluded ? 'opacity-40 grayscale pointer-events-none' : ''} transition-all duration-300`}> 
-                    <input type="file" accept={accept} className="hidden" ref={inputRef} onChange={(e) => e.target.files[0] && onUpload(e.target.files[0])} /> 
-                    <div onClick={() => inputRef.current?.click()} className={`w-full rounded-lg border-2 border-dashed transition-all cursor-pointer overflow-hidden relative flex flex-col items-center justify-center ${borderColorClass} ${current ? (hasError ? 'bg-red-950' : 'bg-slate-800') : 'hover:border-slate-500 hover:bg-slate-800/50'} ${tiny ? '' : aspect} ${mini && !tiny ? 'h-full' : ''}`}> 
-                        {current ? ( 
-                            accept.includes('video') || current.includes('.mp4') || current.includes('.mov') ? (
-                                <>
-                                    <video src={current} className={`absolute inset-0 w-full h-full object-cover group-hover:opacity-100 transition-opacity ${hasError ? 'opacity-0' : 'opacity-60'}`} muted loop autoPlay onError={() => setHasError(true)} />
-                                    {hasError && (
-                                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-red-900/40 p-2 text-center">
-                                            <ReactIcon name="alert-octagon" size={mini ? 16 : 20} className="text-red-400 mb-1" />
-                                            <span className="text-red-200 text-[8px] font-bold uppercase leading-tight">Unsupported<br/>Codec</span>
-                                        </div>
-                                    )}
-                                </>
-                            ) : (
-                                <div className="w-full h-full flex items-center justify-center p-1"><img src={current} className="max-w-full max-h-full object-contain drop-shadow-lg" alt="preview" /></div>
-                            ) 
-                        ) : (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 gap-1 p-2">
-                                <div className={`bg-slate-800 rounded-full ${tiny ? 'p-1' : 'p-2'}`}>{iconName && <ReactIcon name={iconName} size={mini ? 16 : 24} />}</div>
-                                {!tiny && <span className="text-[10px] font-medium uppercase tracking-wider text-center">{label}</span>}
-                            </div>
-                        )} 
-                    </div> 
-                </div> 
-            ); 
-        }
+  return ( 
+    <div className={`relative group ${heightClass} ${!isIncluded ? 'opacity-40 grayscale pointer-events-none' : ''} transition-all duration-300`}> 
+      <input type="file" accept={accept} className="hidden" ref={inputRef} onChange={(e) => e.target.files[0] && onUpload(e.target.files[0])} /> 
+      <div onClick={() => inputRef.current?.click()} className={`w-full rounded-lg border-2 border-dashed transition-all cursor-pointer overflow-hidden relative flex flex-col items-center justify-center ${borderColorClass} ${current ? (hasError ? 'bg-red-950' : 'bg-slate-800') : 'hover:border-slate-500 hover:bg-slate-800/50'} ${tiny ? '' : aspect} ${mini && !tiny ? 'h-full' : ''}`}> 
+        {current ? ( 
+          accept.includes('video') || current.includes('.mp4') || current.includes('.mov') ? (
+            <>
+              <video src={current} className={`absolute inset-0 w-full h-full object-cover group-hover:opacity-100 transition-opacity ${hasError ? 'opacity-0' : 'opacity-60'}`} muted loop autoPlay onError={() => setHasError(true)} />
+              {hasError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-red-900/40 p-2 text-center">
+                  <Icon name="alert-octagon" size={mini ? 16 : 20} className="text-red-400 mb-1" />
+                  <span className="text-red-200 text-[8px] font-bold uppercase leading-tight">Unsupported<br/>Codec</span>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="w-full h-full flex items-center justify-center p-1"><img src={current} className="max-w-full max-h-full object-contain drop-shadow-lg" alt="preview" /></div>
+          ) 
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 gap-1 p-2">
+            <div className={`bg-slate-800 rounded-full ${tiny ? 'p-1' : 'p-2'}`}>{iconName && <Icon name={iconName} size={mini ? 16 : 24} />}</div>
+            {!tiny && <span className="text-[10px] font-medium uppercase tracking-wider text-center">{label}</span>}
+          </div>
+        )} 
+      </div> 
+    </div> 
+  ); 
+}
 
-        function VisibilityControl({ label, elementKey, visibilityState, onToggleGlobal, onTogglePlatform, iconName }) { 
-            const [isOpen, setIsOpen] = useState(false); 
-            const popoverRef = useRef(null); 
-            useEffect(() => { 
-                const handleClickOutside = (event) => { if (popoverRef.current && !popoverRef.current.contains(event.target)) setIsOpen(false); }; 
-                if (isOpen) document.addEventListener('mousedown', handleClickOutside); 
-                return () => document.removeEventListener('mousedown', handleClickOutside); 
-            }, [isOpen]); 
-            return ( 
-                <div className="relative flex items-center gap-2 z-30 flex-grow" ref={popoverRef}> 
-                    <div className="flex items-center gap-2 cursor-pointer flex-grow" onClick={onToggleGlobal}>
-                        <input type="checkbox" checked={visibilityState?.global} readOnly className="w-3.5 h-3.5 rounded border-slate-600 accent-indigo-500 cursor-pointer"/>
-                        <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wider select-none hover:text-slate-200">{iconName && <ReactIcon name={iconName} size={12} />}{label}</div>
-                    </div> 
-                    <button onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }} className={`p-1 rounded hover:bg-slate-700 transition-colors ${isOpen ? 'text-indigo-400 bg-slate-700' : 'text-slate-500'}`} title="Manage Deliverables"><ReactIcon name="sliders-horizontal" size={12} /></button> 
-                    {isOpen && (
-                        <div className="absolute top-full left-0 mt-2 w-56 bg-slate-800 border border-slate-600 rounded-lg shadow-2xl p-3 z-50 animate-in fade-in slide-in-from-top-2">
-                            <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-700">
-                                <span className="text-xs font-bold text-white">Deliverable Visibility</span>
-                                <button onClick={() => setIsOpen(false)}><ReactIcon name="x" size={12} className="text-slate-400 hover:text-white" /></button>
-                            </div>
-                            <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar">
-                                {PLATFORMS_DATA.map(p => (
-                                    <div key={p.id} className="flex items-center gap-2 text-xs text-slate-300 hover:bg-slate-700/50 p-1.5 rounded cursor-pointer" onClick={() => onTogglePlatform(elementKey, p.id)}>
-                                        <input type="checkbox" checked={visibilityState?.platforms[p.id] !== false} readOnly disabled={!visibilityState?.global} className="w-3 h-3 rounded border-slate-500 accent-indigo-500"/>
-                                        <span className={`flex-grow truncate ${!visibilityState?.global ? 'opacity-50' : ''}`}>{p.name}</span>
-                                        <ReactIcon name={p.group.includes('Social') ? 'smartphone' : 'monitor'} size={12} />
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )} 
-                </div> 
-            ); 
-        }
+function VisibilityControl({ label, elementKey, visibilityState, onToggleGlobal, onTogglePlatform, iconName }) { 
+  const [isOpen, setIsOpen] = useState(false); 
+  const popoverRef = useRef(null); 
+  useEffect(() => { 
+    const handleClickOutside = (event) => { if (popoverRef.current && !popoverRef.current.contains(event.target)) setIsOpen(false); }; 
+    if (isOpen) document.addEventListener('mousedown', handleClickOutside); 
+    return () => document.removeEventListener('mousedown', handleClickOutside); 
+  }, [isOpen]); 
+  return ( 
+    <div className="relative flex items-center gap-2 z-30 flex-grow" ref={popoverRef}> 
+      <div className="flex items-center gap-2 cursor-pointer flex-grow" onClick={onToggleGlobal}>
+        <input type="checkbox" checked={visibilityState?.global} readOnly className="w-3.5 h-3.5 rounded border-slate-600 accent-indigo-500 cursor-pointer"/>
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wider select-none hover:text-slate-200">{iconName && <Icon name={iconName} size={12} />}{label}</div>
+      </div> 
+      <button onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }} className={`p-1 rounded hover:bg-slate-700 transition-colors ${isOpen ? 'text-indigo-400 bg-slate-700' : 'text-slate-500'}`} title="Manage Deliverables"><Icon name="sliders-horizontal" size={12} /></button> 
+      {isOpen && (
+        <div className="absolute top-full left-0 mt-2 w-56 bg-slate-800 border border-slate-600 rounded-lg shadow-2xl p-3 z-50 animate-in fade-in slide-in-from-top-2">
+          <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-700">
+            <span className="text-xs font-bold text-white">Deliverable Visibility</span>
+            <button onClick={() => setIsOpen(false)}><Icon name="x" size={12} className="text-slate-400 hover:text-white" /></button>
+          </div>
+          <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar">
+            {PLATFORMS_DATA.map(p => (
+              <div key={p.id} className="flex items-center gap-2 text-xs text-slate-300 hover:bg-slate-700/50 p-1.5 rounded cursor-pointer" onClick={() => onTogglePlatform(elementKey, p.id)}>
+                <input type="checkbox" checked={visibilityState?.platforms[p.id] !== false} readOnly disabled={!visibilityState?.global} className="w-3 h-3 rounded border-slate-500 accent-indigo-500"/>
+                <span className={`flex-grow truncate ${!visibilityState?.global ? 'opacity-50' : ''}`}>{p.name}</span>
+                <Icon name={p.group.includes('Social') ? 'smartphone' : 'monitor'} size={12} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )} 
+    </div> 
+  ); 
+}
 
-        function CreativeOverlay({ config, assets, textData, activePhase, isElementVisible, scaleFactor, currentTime, platformId }) {
-            const show = (key) => isElementVisible(key, platformId);
-            const endboardEnabled = textData.endboard?.enabled;
-            const endboardTriggerTime = parseTimeCode(textData.endboard?.timeCode || '00:00:00');
-            const isEndboardActive = endboardEnabled && currentTime >= endboardTriggerTime;
+function CreativeOverlay({ config, assets, textData, activePhase, isElementVisible, scaleFactor, currentTime, platformId }) {
+  const show = (key) => isElementVisible(key, platformId);
+  
+  const endboardEnabled = textData.endboard?.enabled;
+  const endboardTriggerTime = parseTimeCode(textData.endboard?.timeCode || '00:00:00');
+  const isEndboardActive = endboardEnabled && currentTime >= endboardTriggerTime;
 
-            const OverlayItem = ({ id, children, aspect = '' }) => {
-                const data = config[id] || DEFAULT_POSITIONS[id];
-                const { x, y, scale } = data;
-                const widthClass = ELEMENT_WIDTHS[id] || 'w-32';
-                const aspectClass = aspect ? `w-full ${aspect}` : `w-full h-20`;
-                
-                return (
-                    <div className={`absolute z-10 origin-center pointer-events-none ${widthClass}`} style={{ left: `${x}%`, top: `${y}%`, transform: `translate(-50%, -50%) scale(${scale})` }}>
-                        <div className={`relative w-full ${aspectClass} flex items-center justify-center`}>{children}</div>
-                    </div>
-                );
-            };
+  const OverlayItem = ({ id, children, aspect = '' }) => {
+    const data = config[id] || DEFAULT_POSITIONS[id];
+    const { x, y, scale } = data;
+    const widthClass = ELEMENT_WIDTHS[id] || 'w-32';
+    const aspectClass = aspect ? `w-full ${aspect}` : `w-full h-20`;
+    
+    return (
+      <div 
+        className={`absolute z-10 origin-center pointer-events-none ${widthClass}`} 
+        style={{ 
+          left: `${x}%`, 
+          top: `${y}%`, 
+          transform: `translate(-50%, -50%) scale(${scale})` 
+        }}
+      >
+        <div className={`relative w-full ${aspectClass} flex items-center justify-center`}>
+          {children}
+        </div>
+      </div>
+    );
+  };
 
-            return (
-                <div className="absolute inset-0 w-full h-full pointer-events-none" style={{ fontSize: `${scaleFactor * 16}px` }}>
-                    {!isEndboardActive && (
-                        <>
-                            {show('logo') && <OverlayItem id="logo" aspect="aspect-video">{assets.logo && <img src={assets.logo} alt="logo" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}</OverlayItem>}
-                            {show('titleSquare') && <OverlayItem id="titleSquare" aspect="aspect-square">{assets.title && <img src={assets.title} alt="title sq" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}</OverlayItem>}
-                            {show('titleHrz') && <OverlayItem id="titleHrz" aspect="aspect-video">{assets.title && <img src={assets.title} alt="title hrz" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}</OverlayItem>}
-                            {show('titleVertical') && <OverlayItem id="titleVertical" aspect="aspect-[9/16]">{assets.title && <img src={assets.title} alt="title vert" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}</OverlayItem>}
-                            {show('showText') && activePhase && (
-                                <OverlayItem id="showText">
-                                    <div className="flex flex-col w-full h-full justify-center" style={{ textAlign: activePhase.align }}>
-                                        {activePhase.lines.map(line => (<div key={line.id} style={{ fontFamily: line.font || 'sans-serif', fontWeight: line.weight, fontSize: `${line.size}em`, lineHeight: 1.2, color: 'white', textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>{line.text}</div>))}
-                                    </div>
-                                </OverlayItem>
-                            )}
-                        </>
-                    )}
-                    {isEndboardActive && show('endboardLogo') && <OverlayItem id="endboardLogo" aspect="aspect-video">{assets.title && <img src={assets.title} alt="end logo" className="w-full h-full object-contain opacity-90 drop-shadow-md" />}</OverlayItem>}
-                    {isEndboardActive && show('endboardText') && activePhase && (
-                        <OverlayItem id="endboardText">
-                            <div className="flex flex-col w-full h-full justify-center" style={{ textAlign: activePhase.align }}>
-                                {activePhase.lines.map(line => (<div key={line.id} style={{ fontFamily: line.font || 'sans-serif', fontWeight: line.weight, fontSize: `${line.size}em`, lineHeight: 1.2, color: 'white', textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>{line.text}</div>))}
-                            </div>
-                        </OverlayItem>
-                    )}
-                    {show('classification') && (
-                        <OverlayItem id="classification">
-                            <div className="flex items-center gap-2 w-full h-full justify-center">
-                                {(assets.classIcon || assets.rating) && <img src={assets.classIcon || (assets.rating ? AU_RATINGS.find(r => r.code === assets.rating)?.img : null)} alt={assets.rating} style={{ height: `${textData.classIconSize * scaleFactor}px`, width: 'auto' }} className="object-contain drop-shadow-md" />}
-                                {textData.classText && <span className="text-white drop-shadow-[0_1.2px_1.2px_rgba(0,0,0,0.8)] whitespace-pre-wrap leading-tight" style={{ fontFamily: textData.classFont, textAlign: textData.classAlign, fontWeight: textData.classWeight, fontSize: `${textData.classSize}em` }}>{textData.classText}</span>}
-                            </div>
-                        </OverlayItem>
-                    )}
-                </div>
-            );
-        }
+  return (
+    <div className="absolute inset-0 w-full h-full pointer-events-none" style={{ fontSize: `${scaleFactor * 16}px` }}>
+      {!isEndboardActive && (
+        <>
+          {show('logo') && ( 
+            <OverlayItem id="logo" aspect="aspect-video">
+              {assets.logo && <img src={assets.logo} alt="logo" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}
+            </OverlayItem> 
+          )}
+          {show('titleSquare') && ( 
+            <OverlayItem id="titleSquare" aspect="aspect-square">
+              {assets.title && <img src={assets.title} alt="title sq" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}
+            </OverlayItem> 
+          )}
+          {show('titleHrz') && ( 
+            <OverlayItem id="titleHrz" aspect="aspect-video">
+              {assets.title && <img src={assets.title} alt="title hrz" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}
+            </OverlayItem> 
+          )}
+          {show('titleVertical') && ( 
+            <OverlayItem id="titleVertical" aspect="aspect-[9/16]">
+              {assets.title && <img src={assets.title} alt="title vert" className="w-full h-full object-contain opacity-70 drop-shadow-md" />}
+            </OverlayItem> 
+          )}
+          {show('showText') && activePhase && ( 
+            <OverlayItem id="showText">
+              <div className="flex flex-col w-full h-full justify-center" style={{ textAlign: activePhase.align }}>
+                {activePhase.lines.map(line => ( 
+                  <div key={line.id} style={{ fontFamily: line.font || 'sans-serif', fontWeight: line.weight, fontSize: `${line.size}em`, lineHeight: 1.2, color: 'white', textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>
+                    {line.text}
+                  </div> 
+                ))}
+              </div>
+            </OverlayItem> 
+          )}
+        </>
+      )}
 
-        function DraggableElement({ id, data, onUpdate, parentRef, label, locked, colorConfig, children, isEmpty, onDragStart, onDragEnd, aspect = '' }) { 
-            const { x, y, scale } = data; 
-            const [dragState, setDragState] = useState({ isDragging: false, isResizing: false, startX: 0, startY: 0, initialVal: {} }); 
-            const handleMouseDown = (e, type) => { if (locked) return; e.stopPropagation(); e.preventDefault(); setDragState({ isDragging: type === 'move', isResizing: type === 'resize', startX: e.clientX, startY: e.clientY, initialVal: { x, y, scale } }); if (type === 'move' && onDragStart) onDragStart(id); }; 
-            useEffect(() => { 
-                const handleMouseMove = (e) => { 
-                    if (!dragState.isDragging && !dragState.isResizing) return; 
-                    if (!parentRef.current) return; 
-                    const parentRect = parentRef.current.getBoundingClientRect(); 
-                    if (dragState.isDragging) { 
-                        const deltaX = ((e.clientX - dragState.startX) / parentRect.width) * 100; 
-                        const deltaY = ((e.clientY - dragState.startY) / parentRect.height) * 100; 
-                        onUpdate(id, { x: Math.max(0, Math.min(100, dragState.initialVal.x + deltaX)), y: Math.max(0, Math.min(100, dragState.initialVal.y + deltaY)) }); 
-                    } else if (dragState.isResizing) { 
-                        const deltaX = e.clientX - dragState.startX; 
-                        onUpdate(id, { scale: Math.max(0.2, Math.min(5, dragState.initialVal.scale + (deltaX * 0.005))) }); 
-                    } 
-                }; 
-                const handleMouseUp = () => { setDragState({ isDragging: false, isResizing: false, startX: 0, startY: 0, initialVal: {} }); if (onDragEnd) onDragEnd(); }; 
-                if (dragState.isDragging || dragState.isResizing) { window.addEventListener('mousemove', handleMouseMove); window.addEventListener('mouseup', handleMouseUp); } 
-                return () => { window.removeEventListener('mousemove', handleMouseMove); window.removeEventListener('mouseup', handleMouseUp); }; 
-            }, [dragState, parentRef, onUpdate, id, onDragEnd]); 
-            let placeholderClasses = `border-2 border-dashed ${colorConfig?.border} ${colorConfig?.bg} flex items-center justify-center opacity-80 backdrop-blur-sm`;
-            const widthClass = ELEMENT_WIDTHS[id] || 'w-32';
-            if (aspect) { placeholderClasses += ` w-full ${aspect}`; } else { placeholderClasses += ` w-full h-20`; }
-            const content = isEmpty ? ( <div className={placeholderClasses}><span className={`text-[10px] font-bold uppercase ${colorConfig?.text}`}>{label}</span></div> ) : children; 
-            return ( 
-                <div onMouseDown={(e) => handleMouseDown(e, 'move')} className={`absolute z-20 origin-center select-none ${locked ? '' : 'cursor-move'} ${widthClass}`} style={{ left: `${x}%`, top: `${y}%`, transform: `translate(-50%, -50%) scale(${scale})` }}> 
-                    <div className={`relative group w-full ${!locked ? 'hover:ring-1 ' + colorConfig.ring : ''}`}> 
-                        {content} 
-                        {!locked && (
-                            <>
-                                <div className={`absolute -top-5 left-0 bg-slate-800 text-white text-[9px] px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap`}>{label}</div>
-                                <div onMouseDown={(e) => handleMouseDown(e, 'resize')} className={`absolute -bottom-2 -right-2 w-4 h-4 bg-white rounded-full shadow border border-slate-400 opacity-0 group-hover:opacity-100 cursor-nwse-resize z-30`} />
-                            </>
-                        )} 
-                    </div> 
-                </div> 
-            ); 
-        }
+      {(isEndboardActive && show('endboardLogo')) && (
+        <OverlayItem id="endboardLogo" aspect="aspect-video">
+           {assets.title && <img src={assets.title} alt="endboard logo" className="w-full h-full object-contain opacity-90 drop-shadow-md" />}
+        </OverlayItem>
+      )}
+      {(isEndboardActive && show('endboardText')) && activePhase && (
+        <OverlayItem id="endboardText">
+          <div className="flex flex-col w-full h-full justify-center" style={{ textAlign: activePhase.align }}>
+            {activePhase.lines.map(line => ( 
+              <div key={line.id} style={{ fontFamily: line.font || 'sans-serif', fontWeight: line.weight, fontSize: `${line.size}em`, lineHeight: 1.2, color: 'white', textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>
+                {line.text}
+              </div> 
+            ))}
+          </div>
+        </OverlayItem>
+      )}
 
-        function PlatformCard({ platform, sourceVideo, onClick, isConfigured, activePhase, assets, visibility, customFonts, exportSettings, config, textData, projectName, onToggleSelection }) {
-            const notify = useNotify();
-            const videoRef = useRef(null);
-            const resolveRef = useRef(null);
-            const audioRef = useRef(null);
-            const containerRef = useRef(null);
-            const [isHovering, setIsHovering] = useState(false);
-            const [scaleFactor, setScaleFactor] = useState(1);
-            const [currentTime, setCurrentTime] = useState(0);
-            const [videoError, setVideoError] = useState(false);
-            const [resolveError, setResolveError] = useState(false);
-            const isSelected = config.selected !== false;
+      {show('classification') && ( 
+        <OverlayItem id="classification">
+          <div className="flex items-center gap-2 w-full h-full justify-center">
+            {(assets.classIcon || assets.rating) && ( 
+              <img 
+                src={assets.classIcon || (assets.rating ? AU_RATINGS.find(r => r.code === assets.rating)?.img : null)} 
+                alt={assets.rating} 
+                style={{ height: `${textData.classIconSize * scaleFactor}px`, width: 'auto' }} 
+                className="object-contain drop-shadow-md" 
+              /> 
+            )}
+            {textData.classText && ( 
+              <span className="text-white drop-shadow-[0_1.2px_1.2px_rgba(0,0,0,0.8)] whitespace-pre-wrap leading-tight" 
+                  style={{ fontFamily: textData.classFont, textAlign: textData.classAlign, fontWeight: textData.classWeight, fontSize: `${textData.classSize}em` }}>
+                {textData.classText}
+              </span> 
+            )}
+          </div>
+        </OverlayItem> 
+      )}
+    </div>
+  );
+}
 
-            useEffect(() => {
-                const observer = new ResizeObserver(entries => { for (let entry of entries) { setScaleFactor(entry.contentRect.width / 1000); } });
-                if (containerRef.current) observer.observe(containerRef.current);
-                return () => observer.disconnect();
-            }, []);
+function DraggableElement({ id, data, onUpdate, parentRef, label, locked, colorConfig, children, isEmpty, onDragStart, onDragEnd, aspect = '' }) { 
+  const { x, y, scale } = data; 
+  const [dragState, setDragState] = useState({ isDragging: false, isResizing: false, startX: 0, startY: 0, initialVal: {} }); 
+  
+  const handleMouseDown = (e, type) => { 
+    if (locked) return; 
+    e.stopPropagation(); 
+    e.preventDefault(); 
+    setDragState({ isDragging: type === 'move', isResizing: type === 'resize', startX: e.clientX, startY: e.clientY, initialVal: { x, y, scale } }); 
+    if (type === 'move' && onDragStart) onDragStart(id); 
+  }; 
+  
+  useEffect(() => { 
+    const handleMouseMove = (e) => { 
+      if (!dragState.isDragging && !dragState.isResizing) return; 
+      if (!parentRef.current) return; 
+      const parentRect = parentRef.current.getBoundingClientRect(); 
+      if (dragState.isDragging) { 
+        const deltaX = ((e.clientX - dragState.startX) / parentRect.width) * 100; 
+        const deltaY = ((e.clientY - dragState.startY) / parentRect.height) * 100; 
+        onUpdate(id, { x: Math.max(0, Math.min(100, dragState.initialVal.x + deltaX)), y: Math.max(0, Math.min(100, dragState.initialVal.y + deltaY)) }); 
+      } else if (dragState.isResizing) { 
+        const deltaX = e.clientX - dragState.startX; 
+        onUpdate(id, { scale: Math.max(0.2, Math.min(5, dragState.initialVal.scale + (deltaX * 0.005))) }); 
+      } 
+    }; 
+    const handleMouseUp = () => { 
+      setDragState({ isDragging: false, isResizing: false, startX: 0, startY: 0, initialVal: {} }); 
+      if (onDragEnd) onDragEnd(); 
+    }; 
+    if (dragState.isDragging || dragState.isResizing) { 
+      window.addEventListener('mousemove', handleMouseMove); 
+      window.addEventListener('mouseup', handleMouseUp); 
+    } 
+    return () => { 
+      window.removeEventListener('mousemove', handleMouseMove); 
+      window.removeEventListener('mouseup', handleMouseUp); 
+    }; 
+  }, [dragState, parentRef, onUpdate, id, onDragEnd]); 
+  
+  let placeholderClasses = `border-2 border-dashed ${colorConfig?.border} ${colorConfig?.bg} flex items-center justify-center opacity-80 backdrop-blur-sm`;
+  const widthClass = ELEMENT_WIDTHS[id] || 'w-32';
+  if (aspect) { placeholderClasses += ` w-full ${aspect}`; } else { placeholderClasses += ` w-full h-20`; }
+  const content = isEmpty ? ( <div className={placeholderClasses}><span className={`text-[10px] font-bold uppercase ${colorConfig?.text}`}>{label}</span></div> ) : children; 
+  return ( 
+    <div onMouseDown={(e) => handleMouseDown(e, 'move')} className={`absolute z-20 origin-center select-none ${locked ? '' : 'cursor-move'} ${widthClass}`} style={{ left: `${x}%`, top: `${y}%`, transform: `translate(-50%, -50%) scale(${scale})` }}> 
+      <div className={`relative group w-full ${!locked ? 'hover:ring-1 ' + colorConfig.ring : ''}`}> 
+        {content} 
+        {!locked && (
+          <>
+            <div className={`absolute -top-5 left-0 bg-slate-800 text-white text-[9px] px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap`}>{label}</div>
+            <div onMouseDown={(e) => handleMouseDown(e, 'resize')} className={`absolute -bottom-2 -right-2 w-4 h-4 bg-white rounded-full shadow border border-slate-400 opacity-0 group-hover:opacity-100 cursor-nwse-resize z-30`} />
+          </>
+        )} 
+      </div> 
+    </div> 
+  ); 
+}
 
-            const generatedFilename = useMemo(() => {
-                const clean = (str) => (str || '').toString().replace(/[\s\/\\()\[\]]/g, ''); 
-                const pName = clean(projectName);
-                let tList = (textData.targeting || []).map(t => t === 'OTHER' ? textData.otherTargeting : t);
-                const tStr = (tList.length === 0 ? ['Gen'] : tList).map(clean).join('-');
-                const platName = clean(platform.name);
-                const lStr = clean((textData.lengths || [])[0] || 'Dur');
-                return `${pName}_${tStr}_${platName}_${lStr}_${clean(activePhase?.type || 'Phase')}.${platform.exportFormat?.toLowerCase() || 'mp4'}`;
-            }, [projectName, textData, platform, activePhase]);
+function PlatformCard({ platform, sourceVideo, onClick, isConfigured, activePhase, assets, visibility, customFonts, exportSettings, config, textData, projectName, onToggleSelection }) {
+  const notify = useNotify();
+  const videoRef = useRef(null);
+  const resolveRef = useRef(null);
+  const audioRef = useRef(null);
+  const containerRef = useRef(null);
+  const [isHovering, setIsHovering] = useState(false);
+  const [scaleFactor, setScaleFactor] = useState(1);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [videoError, setVideoError] = useState(false);
+  const [resolveError, setResolveError] = useState(false);
 
-            const handleDownload = (e) => { 
-                e.stopPropagation(); 
-                if (sourceVideo) { triggerFileDownload(sourceVideo, generatedFilename); notify(`Asset Fetch:\n${generatedFilename}`); } else { notify("No source asset available."); }
-            };
+  // If selected is undefined, we default to true
+  const isSelected = config.selected !== false;
 
-            const isElementVisible = (key) => visibility[key]?.global && visibility[key].platforms[platform.id] !== false;
+  useEffect(() => {
+    const observer = new ResizeObserver(entries => {
+      for (let entry of entries) {
+        const currentWidth = entry.contentRect.width;
+        const newScale = Math.max(0.2, currentWidth / 1000); 
+        setScaleFactor(newScale);
+      }
+    });
+    if (containerRef.current) observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
 
-            useEffect(() => {
-                if (isHovering && isSelected) {
-                    if (videoRef.current) { videoRef.current.muted = !!activePhase?.audio; videoRef.current.play().catch(() => {}); }
-                    if (activePhase?.audio && audioRef.current) { audioRef.current.play().catch(() => {}); }
-                } else {
-                    if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; }
-                    if (activePhase?.audio && audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
-                }
-            }, [isHovering, isSelected]);
+  const generatedFilename = useMemo(() => {
+    const clean = (str) => (str || '').toString().replace(/[\s\/\\()\[\]]/g, ''); 
+    const pName = clean(projectName);
+    let tList = (textData.targeting || []).map(t => t === 'OTHER' ? textData.otherTargeting : t);
+    if (tList.length === 0) tList = ['Gen'];
+    const tStr = tList.map(clean).join('-');
+    const platName = clean(platform.name);
+    let lList = (textData.lengths || []).map(l => l === 'OTHER' ? textData.otherLength : l);
+    if (lList.length === 0) lList = ['Dur'];
+    const lStr = lList.map(clean).join('-');
+    const phStr = clean(activePhase?.type || 'Phase');
+    const ext = platform.exportFormat?.toLowerCase() || 'mp4';
+    return `${pName}_${tStr}_${platName}_${lStr}_${phStr}.${ext}`;
+  }, [projectName, textData, platform, activePhase]);
 
-            let resolveSrc = assets.stanResolve?.[textData.stanResolve?.type]?.[platform.source === '16x9' ? '16x9' : platform.source];
+  const handleDownload = (e) => { 
+    e.stopPropagation(); 
+    if (sourceVideo) {
+      triggerFileDownload(sourceVideo, generatedFilename);
+      notify(`Initiating Individual Asset Fetch:\n${generatedFilename}\n\nNote: Visual overlays are processed during BATCH GENERATION.`); 
+    } else {
+      notify("No source asset available to export. Please upload a video first.");
+    }
+  };
 
-            return (
-                <div onClick={onClick} onMouseEnter={() => isSelected && setIsHovering(true)} onMouseLeave={() => setIsHovering(false)} className={`bg-slate-800 rounded-xl overflow-visible transition-all duration-300 cursor-pointer group flex flex-col h-full relative ${isSelected ? (isHovering ? 'scale-105 z-40 shadow-2xl ring-2 ring-indigo-500' : 'z-0 shadow-lg ring-0') : 'opacity-40 grayscale-[0.5]'} ${isConfigured && isSelected && !isHovering ? 'ring-1 ring-green-500/50' : ''}`}>
-                    <div className="p-3 flex items-center justify-between border-b border-slate-700/50 bg-slate-800 rounded-t-xl">
-                        <div className="flex items-center gap-3 text-sm font-medium text-slate-200">
-                            <input type="checkbox" checked={isSelected} onChange={(e) => { e.stopPropagation(); onToggleSelection(); }} onClick={(e) => e.stopPropagation()} className="w-4 h-4 rounded border-slate-600 accent-indigo-500" />
-                            <div className="flex items-center gap-2"><ReactIcon name={platform.group.includes('Social') ? 'smartphone' : 'monitor'} size={14} /><span className="truncate max-w-[120px]">{platform.name}</span></div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            {isSelected && <button onClick={handleDownload} className="bg-slate-700 text-slate-300 px-2 py-1 rounded text-[10px] font-bold"><ReactIcon name="video" size={12} /> {platform.exportFormat}</button>}
-                            {isConfigured && isSelected && <div className="text-green-400"><ReactIcon name="lock" size={12} /></div>}
-                        </div>
-                    </div>
-                    <div className="relative flex-grow bg-slate-900 flex items-center justify-center p-4 min-h-[200px]" ref={containerRef}>
-                        <div className="relative overflow-hidden bg-black shadow-2xl rounded-sm" style={{ aspectRatio: platform.ratio, width: platform.ratio === '16/9' ? '100%' : 'auto', height: platform.ratio !== '16/9' ? '100%' : 'auto' }}>
-                            {sourceVideo ? (
-                                <>
-                                    <video ref={videoRef} src={sourceVideo} className="w-full h-full object-cover opacity-80" muted playsInline preload="auto" loop crossOrigin="anonymous" onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)} />
-                                    <CreativeOverlay config={config} assets={assets} textData={textData} activePhase={activePhase} isElementVisible={isElementVisible} scaleFactor={scaleFactor} currentTime={currentTime} platformId={platform.id} />
-                                    {activePhase?.audio && <audio ref={audioRef} src={activePhase.audio} loop />}
-                                </>
-                            ) : (<div className="w-full h-full flex items-center justify-center"><ReactIcon name="monitor-off" className="text-slate-600" size={32} /></div>)}
-                            {isSelected && (<div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 flex items-end justify-center pb-4 transition-opacity"><button className="bg-white text-indigo-900 px-4 py-2 rounded-full font-bold text-xs">Edit Layout</button></div>)}
-                        </div>
-                    </div>
-                    <div className="p-2 bg-slate-900 border-t border-slate-700 rounded-b-xl text-[9px] font-mono text-slate-500 truncate px-3">{generatedFilename}</div>
-                </div>
-            );
-        }
+  const isElementVisible = (key) => { 
+    if (!visibility[key]) return false;
+    if (!visibility[key].global) return false; 
+    return visibility[key].platforms[platform.id] !== false; 
+  };
 
-        function EditorModal({ platform, assets, textData, visibility, activePhaseIndex, isElementVisible, togglePlatformVisibility, onClose, config, onUpdateElement, onUpdateConfig, onToggleLock, onRevert, onUpdateTextData, onLocalTextUpdate, customFonts }) {
-            const containerRef = useRef(null);
-            const [showSafeZones, setShowSafeZones] = useState(true);
-            const [scaleFactor, setScaleFactor] = useState(1);
-            const currentPhase = textData.phases?.[activePhaseIndex] || textData.phases[0]; 
-            const show = (key) => isElementVisible(key, platform.id);
+  useEffect(() => {
+    if (isHovering && isSelected) {
+      if (videoRef.current) {
+        videoRef.current.muted = !!activePhase?.audio;
+        videoRef.current.play().catch(() => {}); 
+      } 
+      if (activePhase?.audio && audioRef.current) { 
+        audioRef.current.play().catch(() => {}); 
+      } 
+    } else { 
+      if (videoRef.current) {
+        videoRef.current.pause(); 
+        videoRef.current.currentTime = 0; 
+      }
+      if (activePhase?.audio && audioRef.current) { 
+        audioRef.current.pause(); 
+        audioRef.current.currentTime = 0; 
+      } 
+      if (resolveRef.current) {
+        resolveRef.current.pause();
+        resolveRef.current.currentTime = 0;
+        resolveRef.current.style.opacity = 0;
+      }
+    }
+  }, [isHovering, activePhase, isSelected]);
 
-            useEffect(() => {
-                const observer = new ResizeObserver(entries => { for (let entry of entries) { setScaleFactor(entry.contentRect.width / 1000); } });
-                if (containerRef.current) observer.observe(containerRef.current);
-                return () => observer.disconnect();
-            }, []);
+  const handleTimeUpdate = (e) => {
+    const mainTime = e.target.currentTime;
+    setCurrentTime(mainTime);
 
-            return (
-                <div className="fixed inset-0 z-[100] bg-slate-900/95 flex items-center justify-center p-4 backdrop-blur-md">
-                    <div className="w-full h-full max-w-7xl max-h-[90vh] bg-slate-800 rounded-xl border border-slate-700 shadow-2xl overflow-hidden flex flex-col md:flex-row">
-                        <div className="flex-grow relative bg-neutral-900 flex items-center justify-center p-8 overflow-hidden select-none">
-                            <div ref={containerRef} className="relative shadow-2xl bg-black overflow-hidden" style={{ aspectRatio: platform.ratio, maxWidth: '100%', maxHeight: '100%', width: platform.ratio === '16/9' ? '100%' : 'auto', height: platform.ratio !== '16/9' ? '100%' : 'auto' }}>
-                                {assets[platform.source] ? <video src={assets[platform.source]} className="w-full h-full object-cover" autoPlay muted loop crossOrigin="anonymous" /> : <div className="w-full h-full bg-slate-900" />}
-                                <div className="absolute inset-0 w-full h-full z-10" style={{ fontSize: `${scaleFactor * 16}px` }}>
-                                    {show('logo') && <DraggableElement id="logo" data={config.logo || DEFAULT_POSITIONS.logo} onUpdate={onUpdateElement} parentRef={containerRef} label="LOGO" locked={config.locked} colorConfig={ELEMENT_COLORS.logo} isEmpty={!assets.logo}>{assets.logo && <img src={assets.logo} className="w-full h-full object-contain opacity-70 pointer-events-none" />}</DraggableElement>}
-                                    {show('showText') && <DraggableElement id="showText" data={config.showText || DEFAULT_POSITIONS.showText} onUpdate={onUpdateElement} parentRef={containerRef} label="PHASE" locked={config.locked} colorConfig={ELEMENT_COLORS.showText}><div className="w-full h-full flex flex-col justify-center" style={{ textAlign: currentPhase?.align }}>{currentPhase?.lines?.map(l => <div key={l.id} style={{ fontFamily: l.font, fontWeight: l.weight, fontSize: `${l.size}em`, color: 'white' }}>{l.text}</div>)}</div></DraggableElement>}
-                                </div>
-                                {showSafeZones && platform.safeZones.map((zone, i) => ( <div key={i} className="absolute border border-red-500/50 bg-red-500/5 pointer-events-none z-10" style={zone.style}><span className="text-[8px] bg-red-900 text-white px-1 absolute top-0 right-0">{zone.label}</span></div> ))}
-                            </div>
-                            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-2"><button onClick={() => setShowSafeZones(!showSafeZones)} className="bg-slate-800 text-white px-4 py-2 rounded-full text-xs font-bold border border-slate-600">Toggle Safe Zones</button></div>
-                        </div>
-                        <div className="w-full md:w-96 bg-slate-800 border-l border-slate-700 flex flex-col p-6 space-y-6 overflow-y-auto custom-scrollbar">
-                            <div className="flex justify-between items-center"><h3 className="text-xl font-bold">{platform.name}</h3><button onClick={onClose}><ReactIcon name="x" size={24} /></button></div>
-                            <button onClick={onToggleLock} className={`w-full py-3 rounded-lg font-bold ${config.locked ? 'bg-green-600' : 'bg-slate-700'}`}>{config.locked ? 'Hero Locked' : 'Lock Layout'}</button>
-                            <button onClick={onClose} className="w-full py-3 bg-indigo-600 rounded-lg font-bold">Save & Close</button>
-                        </div>
-                    </div>
-                </div>
-            );
-        }
+    if (resolveRef.current && textData.stanResolve?.enabled && !resolveError) {
+      const resolveStart = parseTimeCode(textData.stanResolve.timeCode || '00:00:00');
+      const resolveTime = mainTime - resolveStart;
 
-        function VideoRolloutTool() {
-            const notify = useNotify();
-            const [projects, setProjects] = useState([]);
-            const [activeProjectIndex, setActiveProjectIndex] = useState(-1);
-            const [renderStatus, setRenderStatus] = useState(null);
-            const [activePhaseIndex, setActivePhaseIndex] = useState(0);
-            const [activePlatformId, setActivePlatformId] = useState(null);
-            const [assets, setAssets] = useState({ '16x9': null, '1x1': null, '9x16': null, 'logo': null, 'title': null });
-            const [textData, setTextData] = useState({ classText: "Rated M", classFont: 'sans-serif', phases: [INITIAL_PHASE], lengths: [], targeting: [], stanResolve: { enabled: true, type: 'STAN' } });
-            const [visibility, setVisibility] = useState({ logo: { global: true, platforms: {} }, showText: { global: true, platforms: {} }, classification: { global: true, platforms: {} } });
-            const [configs, setConfigs] = useState({});
+      if (resolveTime >= 0) {
+        resolveRef.current.style.opacity = 1;
+        if (!videoRef.current.paused && resolveRef.current.paused) {
+          resolveRef.current.play().catch(() => {});
+        }
+        if (Math.abs(resolveRef.current.currentTime - resolveTime) > 0.3) {
+          resolveRef.current.currentTime = resolveTime;
+        }
+      } else {
+        resolveRef.current.style.opacity = 0;
+        resolveRef.current.currentTime = 0;
+        if (!resolveRef.current.paused) resolveRef.current.pause();
+      }
+    }
+  };
 
-            const handleFileUpload = (key, file) => { if (file) { setAssets(prev => ({ ...prev, [key]: URL.createObjectURL(file) })); } };
-            const toggleGlobal = (key) => setVisibility(prev => ({ ...prev, [key]: { ...prev[key], global: !prev[key].global } }));
-            const updateConfig = (platId, updates) => setConfigs(prev => ({ ...prev, [platId]: { ...(prev[platId] || {}), ...updates } }));
+  let resolveSrc = null;
+  if (assets.stanResolve && textData.stanResolve?.type) {
+    const typeAssets = assets.stanResolve[textData.stanResolve.type];
+    if (typeAssets) {
+      if (platform.source === '16x9') resolveSrc = typeAssets['16x9'];
+      else if (platform.source === '1x1') resolveSrc = typeAssets['1x1'];
+      else if (platform.source === '9x16') resolveSrc = typeAssets['9x16'];
+      else if (platform.source === '4x5') resolveSrc = typeAssets['4x5'];
+    }
+  }
 
-            const handleBatchExport = async () => {
-                if (window.location.protocol === 'file:') {
-                    notify("SECURITY BLOCK: You are running this as a local file. Browsers block video encoding in 'file://'. Please upload this index.html to GitHub Pages to make it work.");
-                    return;
-                }
-                notify("Starting Rollout Generation...\nGenerating ZIP archive of all selected variants.");
-                setRenderStatus({ current: 1, total: 5, progress: 20, label: "Encoding Video..." });
-                setTimeout(() => setRenderStatus(null), 3000);
-            };
+  return (
+    <div 
+      onClick={onClick} 
+      onMouseEnter={() => isSelected && setIsHovering(true)} 
+      onMouseLeave={() => setIsHovering(false)} 
+      className={`bg-slate-800 rounded-xl overflow-visible transition-all duration-300 cursor-pointer group flex flex-col h-full relative 
+        ${isSelected ? (isHovering ? 'scale-105 z-40 shadow-2xl ring-2 ring-indigo-500' : 'z-0 shadow-lg ring-0') : 'opacity-40 grayscale-[0.5]'}
+        ${isConfigured && isSelected && !isHovering ? 'ring-1 ring-green-500/50' : ''}`}
+    >
+      <div className="p-3 flex items-center justify-between border-b border-slate-700/50 bg-slate-800 rounded-t-xl">
+        <div className="flex items-center gap-3 text-sm font-medium text-slate-200">
+          <input 
+            type="checkbox" 
+            checked={isSelected} 
+            onChange={(e) => { e.stopPropagation(); onToggleSelection(); }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-4 h-4 rounded border-slate-600 accent-indigo-500 cursor-pointer"
+            title={isSelected ? "Included in Rollout" : "Excluded from Rollout"}
+          />
+          <div className="flex items-center gap-2">
+            <Icon name={platform.group.includes('Social') ? 'smartphone' : 'monitor'} size={14} />
+            <span className="truncate max-w-[120px]">{platform.name}</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {isSelected && (
+            <button onClick={handleDownload} className={`px-2 py-1 rounded-md text-[10px] font-bold flex items-center gap-1 transition-colors ${platform.exportFormat === 'MOV' ? 'bg-indigo-900/50 text-indigo-300 hover:bg-indigo-800' : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white'}`}>
+              <Icon name="video" size={12} />{exportSettings?.length > 0 ? `${exportSettings.length} Versions` : platform.exportFormat}
+            </button>
+          )}
+          {isConfigured && isSelected && <div className="text-green-400" title="Hero Layout Saved"><Icon name="lock" size={12} /></div>}
+        </div>
+      </div>
+      <div className="relative flex-grow bg-slate-900 flex items-center justify-center p-4 min-h-[200px]" ref={containerRef}>
+        <div className="relative overflow-hidden bg-black shadow-2xl rounded-sm" style={{ aspectRatio: platform.ratio, width: platform.ratio === '16/9' ? '100%' : 'auto', height: ['9/16', '4/5', '1/1'].includes(platform.ratio) ? '100%' : 'auto' }}>
+          {sourceVideo ? ( 
+            <>
+              <video 
+                ref={videoRef} 
+                src={sourceVideo} 
+                className={`w-full h-full object-cover z-0 transition-opacity duration-300 ${isHovering ? 'opacity-100' : 'opacity-80'}`} 
+                muted={!!activePhase?.audio}
+                playsInline 
+                preload="auto"
+                loop 
+                crossOrigin="anonymous" 
+                onTimeUpdate={handleTimeUpdate}
+                onError={() => setVideoError(true)}
+              />
+              {videoError && (
+                <div className="absolute inset-0 z-[45] bg-red-950/90 flex flex-col items-center justify-center p-4 text-center">
+                  <Icon name="alert-triangle" size={32} className="text-red-500 mb-2" />
+                  <div className="text-red-200 text-[10px] font-bold leading-tight">UNSUPPORTED CODEC</div>
+                  <div className="text-red-400 text-[8px] mt-1">BROWSER CANNOT PLAY THIS FILE</div>
+                </div>
+              )}
+              <CreativeOverlay 
+                config={config}
+                assets={assets}
+                textData={textData}
+                activePhase={activePhase}
+                isElementVisible={isElementVisible}
+                scaleFactor={scaleFactor}
+                currentTime={currentTime}
+                platformId={platform.id}
+              />
+              {resolveSrc && (
+                <div className="absolute inset-0 z-50 pointer-events-none">
+                  <video
+                    ref={resolveRef}
+                    src={resolveSrc}
+                    className="w-full h-full object-cover transition-opacity duration-75"
+                    muted
+                    playsInline
+                    preload="auto"
+                    style={{ opacity: 0 }}
+                    onError={() => setResolveError(true)}
+                  />
+                  {resolveError && (
+                    <div className="absolute top-2 left-2 bg-red-600 text-white text-[8px] px-1.5 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-lg">
+                      <Icon name="circle-x" size={8} /> RESOLVE ERROR
+                    </div>
+                  )}
+                </div>
+              )}
+              {activePhase?.audio && <audio ref={audioRef} src={activePhase.audio} loop />}
+            </> 
+          ) : ( 
+            <div className="w-full h-full border border-slate-700 bg-slate-800 flex items-center justify-center"><Icon name="monitor-off" className="text-slate-600" size={32} /></div> 
+          )}
+          {isSelected && (
+            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 flex items-end justify-center p-4 transition-all duration-300 z-30 h-1/2">
+              <button className="bg-white text-indigo-900 px-4 py-2 rounded-full font-bold text-xs shadow-lg flex items-center gap-2 transform translate-y-2 group-hover:translate-y-0 transition-transform">
+                <Icon name="move" size={12} /> {isConfigured ? 'View Hero' : 'Edit Layout'}
+              </button>
+            </div>
+          )}
+          {!isSelected && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-900/60 z-30 backdrop-grayscale">
+              <span className="bg-slate-800/80 px-3 py-1 rounded text-[10px] font-bold text-slate-400 uppercase tracking-widest border border-slate-700">Excluded</span>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="p-2 bg-slate-900 border-t border-slate-700 rounded-b-xl">
+        <div className="bg-slate-800 rounded border border-slate-700 p-1.5">
+          <div className="text-[9px] font-mono text-slate-400 truncate" title={generatedFilename}>
+            {generatedFilename}
+          </div>
+        </div>
+      </div>
+      {!isHovering && <div className="p-3 bg-slate-800/80 border-t border-slate-700 text-xs text-slate-400 transition-opacity">{platform.description}</div>}
+    </div>
+  );
+}
 
-            return (
-                <div className="min-h-screen bg-slate-900 pb-20">
-                    <header className="bg-slate-800/50 p-6 border-b border-slate-700 flex justify-between items-center sticky top-0 z-50">
-                        <div className="flex items-center gap-3"><ReactIcon name="layout-template" className="text-indigo-400" size={24} /><h1 className="text-xl font-bold">Master Rollout Tool</h1></div>
-                        <div className="flex gap-3">
-                            <button onClick={() => setAssets({ '16x9': PLACEHOLDERS.video169, 'logo': PLACEHOLDERS.logo })} className="text-xs text-slate-400">Load Demo</button>
-                            <button onClick={handleBatchExport} className="bg-indigo-600 px-6 py-2 rounded-lg font-bold flex items-center gap-2"><ReactIcon name="download" size={16} /> Generate Rollout</button>
-                        </div>
-                    </header>
+function EditorModal({ platform, assets, textData, visibility, activePhaseIndex, isElementVisible, togglePlatformVisibility, onClose, config, onUpdateElement, onUpdateConfig, onToggleLock, onRevert, onUpdateTextData, onLocalTextUpdate, customFonts }) {
+  const containerRef = useRef(null);
+  const videoRef = useRef(null); 
+  const resolveRef = useRef(null); 
+  const [showSafeZones, setShowSafeZones] = useState(true);
+  const [draggingId, setDraggingId] = useState(null);
+  const [scaleFactor, setScaleFactor] = useState(1);
+  const [mainError, setMainError] = useState(false);
+  const [resError, setResError] = useState(false);
+  
+  const isLocked = config.locked;
+  const currentPhase = textData.phases?.[activePhaseIndex] || textData.phases[0]; 
+  const show = (key) => isElementVisible(key, platform.id);
+  
+  const guides = useMemo(() => { 
+    if (!draggingId || !containerRef.current) return []; 
+    const activeConfig = config[draggingId] || DEFAULT_POSITIONS[draggingId]; 
+    const g = []; 
+    const threshold = 0.5; 
+    if (Math.abs(activeConfig.x - 50) < threshold) g.push({ type: 'v', pos: 50, color: 'border-cyan-400' }); 
+    if (Math.abs(activeConfig.y - 50) < threshold) g.push({ type: 'h', pos: 50, color: 'border-cyan-400' }); 
+    ['logo', 'titleSquare', 'titleHrz', 'titleVertical', 'classification', 'showText'].forEach(otherId => { 
+      if (otherId === draggingId) return; 
+      if (!show(otherId)) return; 
+      const otherConfig = config[otherId] || DEFAULT_POSITIONS[otherId]; 
+      if (Math.abs(activeConfig.x - otherConfig.x) < threshold) { g.push({ type: 'v', pos: otherConfig.x, color: 'border-fuchsia-500' }); } 
+      if (Math.abs(activeConfig.y - otherConfig.y) < threshold) { g.push({ type: 'h', pos: otherConfig.y, color: 'border-fuchsia-500' }); } 
+    }); 
+    return g; 
+  }, [draggingId, config, show]); 
+  
+  const handleTimeUpdate = (e) => {
+    const mainTime = e.target.currentTime;
+    if (resolveRef.current && textData.stanResolve?.enabled && !resError) {
+      const resolveStart = parseTimeCode(textData.stanResolve.timeCode || '00:00:00');
+      const resolveTime = mainTime - resolveStart;
+      if (resolveTime >= 0) {
+        resolveRef.current.style.opacity = 1;
+        if (!videoRef.current.paused && resolveRef.current.paused) resolveRef.current.play().catch(() => {});
+        if (Math.abs(resolveRef.current.currentTime - resolveTime) > 0.3) resolveRef.current.currentTime = resolveTime;
+      } else {
+        resolveRef.current.style.opacity = 0;
+        resolveRef.current.currentTime = 0;
+        if (!resolveRef.current.paused) resolveRef.current.pause();
+      }
+    }
+  };
 
-                    <main className="max-w-7xl mx-auto p-8 grid grid-cols-1 lg:grid-cols-4 gap-8">
-                        <div className="lg:col-span-1 space-y-6">
-                            <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 space-y-4">
-                                <h2 className="text-xs font-bold text-slate-500 uppercase">Master Assets</h2>
-                                <FileUploader label="Logo" accept="image/*" current={assets.logo} onUpload={(f) => handleFileUpload('logo', f)} iconName="image" mini />
-                                <FileUploader label="Hero 16:9" accept="video/*" current={assets['16x9']} onUpload={(f) => handleFileUpload('16x9', f)} iconName="monitor" aspect="aspect-video" />
-                            </div>
-                        </div>
-                        <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-6">
-                            {PLATFORMS_DATA.map(p => (
-                                <PlatformCard key={p.id} platform={p} sourceVideo={assets[p.source === '16x9' ? '16x9' : '16x9']} assets={assets} textData={textData} visibility={visibility} activePhase={textData.phases[activePhaseIndex]} config={configs[p.id] || {}} projectName="Master" onToggleSelection={() => {}} onClick={() => setActivePlatformId(p.id)} />
-                            ))}
-                        </div>
-                    </main>
+  const toggleExport = (exportId) => { 
+    const currentExports = config.exportIds || []; 
+    const newExports = currentExports.includes(exportId) ? currentExports.filter(id => id !== exportId) : [...currentExports, exportId]; 
+    onUpdateConfig({ exportIds: newExports }); 
+  };
+  const toggleCategory = (catId) => { 
+    const currentCats = config.categories || []; 
+    const newCats = currentCats.includes(catId) ? currentCats.filter(id => id !== catId) : [...currentCats, id]; 
+    onUpdateConfig({ categories: newCats }); 
+  };
 
-                    {activePlatformId && (
-                        <EditorModal 
-                            platform={PLATFORMS_DATA.find(p => p.id === activePlatformId)} 
-                            assets={assets} textData={textData} visibility={visibility} activePhaseIndex={activePhaseIndex} isElementVisible={(k, id) => visibility[k]?.global} 
-                            togglePlatformVisibility={() => {}} onClose={() => setActivePlatformId(null)} config={configs[activePlatformId] || {}}
-                            onUpdateElement={(id, updates) => updateConfig(activePlatformId, { [id]: { ...(configs[activePlatformId]?.[id] || {}), ...updates } })} 
-                            onToggleLock={() => updateConfig(activePlatformId, { locked: !configs[activePlatformId]?.locked })}
-                            onUpdateConfig={(u) => updateConfig(activePlatformId, u)} customFonts={[]}
-                        />
-                    )}
+  useEffect(() => {
+    const observer = new ResizeObserver(entries => {
+      for (let entry of entries) {
+        const currentWidth = entry.contentRect.width;
+        const newScale = Math.max(0.2, currentWidth / 1000); 
+        setScaleFactor(newScale);
+      }
+    });
+    if (containerRef.current) observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
 
-                    {renderStatus && (
-                        <div className="fixed inset-0 z-[200] bg-slate-900/90 flex items-center justify-center p-6 backdrop-blur-sm">
-                            <div className="bg-slate-800 border border-slate-700 p-8 rounded-2xl w-full max-w-md text-center space-y-4">
-                                <ReactIcon name="loader-2" size={32} className="mx-auto animate-spin text-indigo-400" />
-                                <h3 className="text-xl font-bold">{renderStatus.label}</h3>
-                                <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden"><div className="bg-indigo-500 h-full transition-all" style={{ width: `${renderStatus.progress}%` }} /></div>
-                            </div>
-                        </div>
-                    )}
-                </div>
-            );
-        }
+  let resolveSrc = null;
+  if (assets.stanResolve && textData.stanResolve?.type) {
+    const typeAssets = assets.stanResolve[textData.stanResolve.type];
+    if (typeAssets) {
+      if (platform.source === '16x9') resolveSrc = typeAssets['16x9'];
+      else if (platform.source === '1x1') resolveSrc = typeAssets['1x1'];
+      else if (platform.source === '9x16') resolveSrc = typeAssets['9x16'];
+      else if (platform.source === '4x5') resolveSrc = typeAssets['4x5'];
+    }
+  }
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(
-            <NotificationProvider>
-                <VideoRolloutTool />
-            </NotificationProvider>
-        );
-    </script>
-</body>
-</html>
+  useEffect(() => { setMainError(false); }, [assets[platform.source]]);
+  useEffect(() => { setResError(false); }, [resolveSrc]);
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-slate-900/95 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="w-full h-full max-w-7xl max-h-[90vh] bg-slate-800 rounded-xl border border-slate-700 shadow-2xl overflow-hidden flex flex-col md:flex-row">
+        <div className="flex-grow relative bg-neutral-900 flex items-center justify-center p-8 overflow-hidden select-none">
+          <div ref={containerRef} className="relative shadow-2xl bg-black overflow-hidden ring-1 ring-slate-700" style={{ aspectRatio: platform.ratio, maxWidth: '100%', maxHeight: '100%', width: platform.ratio === '16/9' ? '100%' : 'auto', height: ['9/16', '4/5', '1/1'].includes(platform.ratio) ? '100%' : 'auto' }}>
+            {assets[platform.source] ? ( 
+              <>
+                <video 
+                  ref={videoRef}
+                  src={assets[platform.source]} 
+                  className="w-full h-full object-cover z-0" 
+                  autoPlay 
+                  muted 
+                  loop 
+                  crossOrigin="anonymous" 
+                  onTimeUpdate={handleTimeUpdate}
+                  onError={() => setMainError(true)}
+                /> 
+                {mainError && (
+                  <div className="absolute inset-0 z-40 bg-red-950/90 flex flex-col items-center justify-center text-center p-6">
+                    <Icon name="alert-circle" size={48} className="text-red-500 mb-3" />
+                    <h4 className="text-white font-bold text-lg mb-1 uppercase tracking-tight">Unsupported Codec</h4>
+                    <p className="text-red-300 text-xs max-w-xs">Your browser cannot play this file format. It may use ProRes or another unsupported codec. Please use H.264/MP4.</p>
+                  </div>
+                )}
+              </>
+            ) : <div className="w-full h-full bg-slate-900" />}
+            
+            <div className="absolute inset-0 w-full h-full z-10" style={{ fontSize: `${scaleFactor * 16}px` }}>
+              {show('logo') && ( <DraggableElement id="logo" aspect="aspect-video" data={config.logo || DEFAULT_POSITIONS.logo} onUpdate={onUpdateElement} parentRef={containerRef} label="LOGO" locked={isLocked} colorConfig={ELEMENT_COLORS.logo} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} isEmpty={!assets.logo}>{assets.logo && <img src={assets.logo} alt="logo" className="w-full h-full object-contain opacity-70 drop-shadow-md pointer-events-none" />}</DraggableElement> )}
+              {show('titleSquare') && ( <DraggableElement id="titleSquare" aspect="aspect-square" data={config.titleSquare || DEFAULT_POSITIONS.titleSquare} onUpdate={onUpdateElement} parentRef={containerRef} label="SQ TITLE" locked={isLocked} colorConfig={ELEMENT_COLORS.titleSquare} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} isEmpty={!assets.title}>{(assets.title) && <img src={assets.title} alt="title sq" className="w-full h-full object-contain opacity-70 drop-shadow-md pointer-events-none" />}</DraggableElement> )}
+              {show('titleHrz') && ( <DraggableElement id="titleHrz" aspect="aspect-video" data={config.titleHrz || DEFAULT_POSITIONS.titleHrz} onUpdate={onUpdateElement} parentRef={containerRef} label="HZ TITLE" locked={isLocked} colorConfig={ELEMENT_COLORS.titleHrz} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} isEmpty={!assets.title}>{(assets.title) && <img src={assets.title} alt="title hrz" className="w-full h-full object-contain opacity-70 drop-shadow-md pointer-events-none" />}</DraggableElement> )}
+              {show('titleVertical') && ( <DraggableElement id="titleVertical" aspect="aspect-[9/16]" data={config.titleVertical || DEFAULT_POSITIONS.titleVertical} onUpdate={onUpdateElement} parentRef={containerRef} label="VT TITLE" locked={isLocked} colorConfig={ELEMENT_COLORS.titleVertical} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} isEmpty={!assets.title}>{(assets.title) && <img src={assets.title} alt="title vert" className="w-full h-full object-contain opacity-70 drop-shadow-md pointer-events-none" />}</DraggableElement> )}
+              {show('classification') && ( <DraggableElement id="classification" data={config.classification || DEFAULT_POSITIONS.classification} onUpdate={onUpdateElement} parentRef={containerRef} label="CLASS" locked={isLocked} colorConfig={ELEMENT_COLORS.classification} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} isEmpty={!assets.rating && !textData.classText}><div className="flex items-center gap-2 pointer-events-none w-full h-full justify-center">{(assets.classIcon || assets.rating) && ( <img src={assets.classIcon || (assets.rating ? AU_RATINGS.find(r => r.code === assets.rating)?.img : null)} alt={assets.rating} style={{ height: `${textData.classIconSize * scaleFactor}px`, width: 'auto' }} className="object-contain drop-shadow-md" /> )}{textData.classText && ( <span className="text-white drop-shadow-[0_1.2px_1.2px_rgba(0,0,0,0.8)] whitespace-pre-wrap leading-tight" style={{ fontFamily: textData.classFont, textAlign: textData.classAlign, fontWeight: textData.classWeight, fontSize: `${textData.classSize}em` }}>{textData.classText}</span> )}</div></DraggableElement> )}
+              {show('showText') && ( <DraggableElement id="showText" data={config.showText || DEFAULT_POSITIONS.showText} onUpdate={onUpdateElement} parentRef={containerRef} label="PHASE MSG" locked={isLocked} colorConfig={ELEMENT_COLORS.showText} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} isEmpty={!currentPhase?.lines?.length}><div className="pointer-events-none w-full h-full justify-center flex flex-col" style={{ textAlign: currentPhase?.align || 'center' }}>{currentPhase?.lines?.map(line => ( <div key={line.id} style={{ fontFamily: line.font || 'sans-serif', fontWeight: line.weight, fontSize: `${line.size}em`, lineHeight: 1.2, color: 'white', textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>{line.text}</div> ))}</div></DraggableElement> )}
+              {show('endboardLogo') && ( <DraggableElement id="endboardLogo" aspect="aspect-video" data={config.endboardLogo || DEFAULT_POSITIONS.endboardLogo} onUpdate={onUpdateElement} parentRef={containerRef} label="END LOGO" locked={isLocked} colorConfig={ELEMENT_COLORS.endboardLogo} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} isEmpty={!assets.title}>{assets.title && <img src={assets.title} alt="end logo" className="w-full h-full object-contain opacity-90 drop-shadow-md pointer-events-none" />}</DraggableElement> )}
+              {show('endboardText') && ( <DraggableElement id="endboardText" data={config.endboardText || DEFAULT_POSITIONS.endboardText} onUpdate={onUpdateElement} parentRef={containerRef} label="END TEXT" locked={isLocked} colorConfig={ELEMENT_COLORS.endboardText} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} isEmpty={!currentPhase?.lines?.length}><div className="pointer-events-none w-full h-full justify-center flex flex-col" style={{ textAlign: currentPhase?.align || 'center' }}>{currentPhase?.lines?.map(line => ( <div key={line.id} style={{ fontFamily: line.font || 'sans-serif', fontWeight: line.weight, fontSize: `${line.size}em`, lineHeight: 1.2, color: 'white', textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>{line.text}</div> ))}</div></DraggableElement> )}
+            </div>
+
+            {resolveSrc && (
+              <div className="absolute inset-0 pointer-events-none z-50">
+                <video
+                  ref={resolveRef}
+                  src={resolveSrc}
+                  className="w-full h-full object-cover transition-opacity duration-75"
+                  muted
+                  playsInline
+                  preload="auto"
+                  style={{ opacity: 0 }}
+                  onError={() => setResError(true)}
+                />
+                {resError && (
+                  <div className="absolute top-4 left-4 bg-red-600 text-white text-[10px] px-2 py-1 rounded font-bold flex items-center gap-2 shadow-xl border border-red-400">
+                    <Icon name="alert-octagon" size={14} /> UNSUPPORTED RESOLVE CODEC
+                  </div>
+                )}
+              </div>
+            )}
+
+            {guides.map((g, i) => ( <div key={i} className={`absolute pointer-events-none z-50 ${g.color} ${g.type === 'v' ? 'border-l border-dashed h-full top-0' : 'border-t border-dashed w-full left-0'}`} style={{ left: g.type === 'v' ? `${g.pos}%` : 0, top: g.type === 'h' ? `${g.pos}%` : 0 }} /> ))}
+            {showSafeZones && platform.safeZones.map((zone, i) => ( <div key={i} className="absolute bg-red-500/10 border border-red-500/50 flex items-center justify-center pointer-events-none z-10" style={zone.style}><span className="text-[10px] uppercase font-bold text-red-100 bg-red-900/80 px-1 rounded tracking-tighter opacity-70 absolute top-0 right-0">{zone.label}</span></div> ))}
+            {isLocked && (<div className="absolute inset-0 border-4 border-green-500 pointer-events-none z-50 flex items-start justify-center pt-4"><div className="bg-green-600 text-white px-4 py-1.5 rounded-full font-bold text-sm shadow-xl flex items-center gap-2 animate-in slide-in-from-top-4"><Icon name="lock" size={14} /> HERO LAYOUT SAVED</div></div>)}
+          </div>
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-4 bg-slate-800/90 p-2 rounded-full border border-slate-600 z-30"><button onClick={() => setShowSafeZones(!showSafeZones)} className={`px-4 py-1.5 rounded-full text-xs font-bold transition-colors ${showSafeZones ? 'bg-red-500/20 text-red-400' : 'bg-slate-700 text-slate-400'}`}>{showSafeZones ? 'Hide Safe Zones' : 'Show Safe Zones'}</button></div>
+        </div>
+        <div className="w-full md:w-96 bg-slate-800 border-l border-slate-700 flex flex-col z-20 h-full overflow-hidden">
+          <div className="flex-shrink-0 p-6 border-b border-slate-700 bg-slate-800 z-10 flex items-center justify-between"><h3 className="font-bold text-lg text-white">{platform.name}</h3><button onClick={onClose} className="p-2 hover:bg-slate-700 rounded-full text-slate-400 hover:text-white"><Icon name="x" size={20} /></button></div>
+          <div className="flex-grow overflow-y-auto p-6 custom-scrollbar space-y-4">
+            {show('showText') && currentPhase && (
+              <div className="bg-slate-700/30 p-4 rounded-lg border border-slate-600/50 flex-shrink-0">
+                <div className="flex items-center gap-2 mb-3 text-xs font-bold text-slate-400 uppercase"><Icon name="edit-3" size={12} /> Phase Messaging Customization</div>
+                <div className="space-y-3">
+                  {currentPhase.lines.map((line, lineIdx) => (
+                    <div key={line.id} className="bg-slate-800/50 rounded p-2 border border-slate-700/50 flex flex-col gap-2">
+                      <input type="text" value={line.text} onChange={(e) => onLocalTextUpdate(activePhaseIndex, lineIdx, 'text', e.target.value)} className="bg-transparent text-sm text-white placeholder-slate-500 outline-none w-full" placeholder="Line Text" />
+                      <div className="flex items-center gap-1.5 pt-1 border-t border-slate-700/50">
+                        <select value={line.font} onChange={(e) => onLocalTextUpdate(activePhaseIndex, lineIdx, 'font', e.target.value)} className="bg-slate-900 text-[10px] text-slate-300 rounded px-1 py-0.5 outline-none max-w-[70px]">
+                          <option value="sans-serif">Default</option>
+                          {customFonts.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
+                        </select>
+                        <select value={line.weight} onChange={(e) => onLocalTextUpdate(activePhaseIndex, lineIdx, 'weight', e.target.value)} className="bg-slate-900 text-[10px] text-slate-300 rounded px-1 py-0.5 outline-none">
+                          <option value="100">Thin</option><option value="400">Reg</option><option value="700">Bold</option><option value="900">Black</option>
+                        </select>
+                        <input type="number" step="0.1" min="0.5" max="5.0" value={line.size} onChange={(e) => onLocalTextUpdate(activePhaseIndex, lineIdx, 'size', parseFloat(e.target.value))} className="w-10 bg-slate-900 text-[10px] text-slate-300 rounded px-1 py-0.5 outline-none text-center" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {show('classification') && ( <div className="bg-slate-700/30 p-4 rounded-lg border border-slate-600/50 flex-shrink-0"><div className="flex items-center gap-2 mb-3 text-xs font-bold text-slate-400 uppercase"><Icon name="alert-triangle" size={12} /> Classification Settings</div><div className="flex flex-col gap-1 mb-2"><div className="flex justify-between text-[10px] text-slate-400"><span>Icon Size</span><span>{textData.classIconSize}px</span></div><input type="range" min="20" max="200" value={textData.classIconSize} onChange={(e) => onUpdateTextData('classIconSize', parseInt(e.target.value))} className="w-full h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-indigo-500" /></div><div className="flex items-center gap-2"><div className="flex-grow"><span className="text-[8px] text-slate-500 block mb-0.5">FONT SIZE</span><input type="number" step="0.1" min="0.5" max="5.0" value={textData.classSize} onChange={(e) => onUpdateTextData('classSize', parseFloat(e.target.value))} className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 text-xs text-white outline-none" /></div><div className="flex-grow"><span className="text-[8px] text-slate-500 block mb-0.5">WEIGHT</span><select value={textData.classWeight} onChange={(e) => onUpdateTextData('classWeight', e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 text-xs text-white outline-none"><option value="100">Thin</option><option value="300">Light</option><option value="400">Regular</option><option value="500">Medium</option><option value="700">Bold</option><option value="900">Black</option></select></div></div></div> )}
+            <div className="bg-slate-700/30 p-4 rounded-lg border border-slate-600/50 flex-shrink-0"><div className="flex items-center gap-2 mb-3 text-xs font-bold text-slate-400 uppercase"><Icon name="tag" size={12} /> Category</div><div className="flex flex-wrap gap-2">{CATEGORIES.map(cat => { const isSelected = config.categories?.includes(cat.id); return ( <div key={cat.id} onClick={() => toggleCategory(cat.id)} className={`px-3 py-1.5 rounded-full border cursor-pointer text-xs font-medium transition-all ${isSelected ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-600 text-slate-400 hover:bg-slate-700'}`}>{cat.name}</div> ); })}</div></div>
+            <div className="bg-slate-700/30 p-4 rounded-lg border border-slate-600/50 flex-shrink-0"><div className="flex items-center gap-2 mb-3 text-xs font-bold text-slate-400 uppercase"><Icon name="layers" size={12} /> Active Layers</div><div className="space-y-2">{[ { id: 'logo', label: 'Brand Logo', color: ELEMENT_COLORS.logo }, { id: 'titleSquare', label: 'Title Square', color: ELEMENT_COLORS.titleSquare }, { id: 'titleHrz', label: 'Title Horizontal', color: ELEMENT_COLORS.titleHrz }, { id: 'titleVertical', label: 'Title Vertical', color: ELEMENT_COLORS.titleVertical }, { id: 'classification', label: 'Classification', color: ELEMENT_COLORS.classification }, { id: 'showText', label: 'Phase Messaging', color: ELEMENT_COLORS.showText }, { id: 'endboardLogo', label: 'Endboard Logo', color: ELEMENT_COLORS.endboardLogo }, { id: 'endboardText', label: 'Endboard Text', color: ELEMENT_COLORS.endboardText } ].map((item) => { const isActive = isElementVisible(item.id, platform.id); return ( <div key={item.id} onClick={() => togglePlatformVisibility(item.id, platform.id)} className={`flex items-center justify-between p-2 rounded cursor-pointer transition-all border ${isActive ? 'bg-slate-700/80 border-slate-600' : 'bg-slate-800/50 border-transparent opacity-50'}`}><div className="flex items-center gap-2"><span className={`w-2 h-2 rounded-full ${isActive ? item.color.hex : 'bg-slate-600'}`} style={{ backgroundColor: isActive ? item.color.hex : undefined }}></span><span className={`text-xs font-medium ${isActive ? 'text-white' : 'text-slate-500'}`}>{item.label}</span></div>{isActive ? <Icon name="eye" size={12} className="text-slate-400" /> : <Icon name="eye-off" size={12} className="text-slate-600" />}</div> )})}</div></div>
+            <div className="bg-slate-700/30 p-4 rounded-lg border border-slate-600/50 flex-shrink-0"><div className="flex items-center gap-2 mb-3 text-xs font-bold text-slate-400 uppercase"><Icon name="download" size={12} /> Export Targets</div><div className="space-y-1">{EXPORT_PRESETS.map(preset => { const isSelected = config.exportIds?.includes(preset.id); return ( <div key={preset.id} onClick={() => toggleExport(preset.id)} className={`flex items-start gap-3 p-2 rounded cursor-pointer border transition-all ${isSelected ? 'bg-indigo-900/30 border-indigo-500/50' : 'border-transparent hover:bg-slate-700/50'}`}><div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 mt-0.5 ${isSelected ? 'bg-indigo-500 border-indigo-500' : 'border-slate-600'}`}>{isSelected && <Icon name="check" size={10} className="text-white" />}</div><div className="flex flex-col"><span className={`text-xs font-medium leading-tight ${isSelected ? 'text-white' : 'text-slate-400'}`}>{preset.name}</span><span className="text-[10px] text-slate-500 font-mono">.{preset.ext}</span></div></div> ); })}</div></div>
+          </div>
+          <div className="flex-shrink-0 p-6 border-t border-slate-700 bg-slate-800 z-10">
+            {config.savedTextData && !isLocked && (
+              <button onClick={onRevert} className="w-full py-3 mb-2 bg-red-900/30 hover:bg-red-900/50 text-red-300 font-bold rounded-lg transition-colors flex items-center justify-center gap-2"><Icon name="rotate-ccw" size={16} /> Revert to Global Master</button>
+            )}
+            <button onClick={onToggleLock} className={`w-full py-3 mb-2 font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${isLocked ? 'bg-green-600 text-white' : 'bg-slate-700 text-slate-300'}`}>{isLocked ? <><Icon name="lock" size={16} /> Hero Layout Saved</> : <><Icon name="unlock" size={16} /> Lock & Save as Hero</>}</button>
+            <button onClick={onClose} className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-2"><Icon name="check-circle" size={16} /> Save & Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- MAIN APPLICATION ---
+function VideoRolloutTool() {
+  const notify = useNotify();
+  const [projects, setProjects] = useState([]); 
+  const [activeProjectIndex, setActiveProjectIndex] = useState(-1); 
+  const [editingProjectId, setEditingProjectId] = useState(null);
+  const [ingestOrder, setIngestOrder] = useState(INGEST_MODULES.map(m => m.id));
+  const [hiddenIngestItems, setHiddenIngestItems] = useState([]);
+  const [isIngestManageMode, setIsIngestManageMode] = useState(false);
+  const [renderStatus, setRenderStatus] = useState(null); // { current, total, progress, label }
+
+  const [assets, setAssets] = useState({ 
+    '16x9': null, '1x1': null, '9x16': null, '4x5': null, 
+    'logo': null, 'title': null, 'titleSquare': null, 'titleHrz': null, 'titleVertical': null, 'classIcon': null, 'rating': null,
+    stanResolve: {
+      'STAN': { '16x9': null, '1x1': null, '9x16': null, '4x5': null },
+      'STAN_SPORT': { '16x9': null, '1x1': null, '9x16': null, '4x5': null },
+      'STAN_PPV': { '16x9': null, '1x1': null, '9x16': null, '4x5': null } 
+    }
+  });
+
+  const [textData, setTextData] = useState({ 
+    classText: "Recommended for\nMature Audiences", 
+    classFont: 'sans-serif', 
+    classAlign: 'left',
+    classWeight: '700', 
+    classSize: 1.0, 
+    classIconSize: 60,
+    phases: [INITIAL_PHASE],
+    lengths: [],
+    otherLength: '00:00:00',
+    targeting: [], 
+    otherTargeting: '',
+    endboard: { enabled: false, timeCode: '00:00:00' },
+    stanResolve: { enabled: true, type: 'STAN', timeCode: '00:00:00' }
+  });
+
+  const [activePhaseIndex, setActivePhaseIndex] = useState(0);
+  const [visibility, setVisibility] = useState({
+    logo: { global: true, platforms: {} },
+    title: { global: true, platforms: {} },
+    titleSquare: { global: true, platforms: {} },
+    titleHrz: { global: true, platforms: {} },
+    titleVertical: { global: true, platforms: {} },
+    classification: { global: true, platforms: {} },
+    showText: { global: true, platforms: {} },
+    endboardLogo: { global: true, platforms: {} }, 
+    endboardText: { global: true, platforms: {} }
+  });
+
+  const [platformOrder, setPlatformOrder] = useState(PLATFORMS_DATA.map(p => p.id));
+  const [hiddenPlatforms, setHiddenPlatforms] = useState([]);
+  const [isManageMode, setIsManageMode] = useState(false);
+  const [configs, setConfigs] = useState({});
+  const [customFonts, setCustomFonts] = useState([]);
+  const [activePlatformId, setActivePlatformId] = useState(null);
+  const [lastUploadedFont, setLastUploadedFont] = useState('sans-serif'); 
+
+  // Derived Project State
+  const getCurrentProject = useCallback(() => activeProjectIndex === -1 ? null : projects[activeProjectIndex], [activeProjectIndex, projects]);
+  
+  const currentAssets = useMemo(() => activeProjectIndex === -1 ? assets : (getCurrentProject()?.assets || assets), [activeProjectIndex, projects, assets, getCurrentProject]);
+  const currentTextData = useMemo(() => activeProjectIndex === -1 ? textData : (getCurrentProject()?.textData || textData), [activeProjectIndex, projects, textData, getCurrentProject]);
+  const currentVisibility = useMemo(() => activeProjectIndex === -1 ? visibility : (getCurrentProject()?.visibility || visibility), [activeProjectIndex, projects, visibility, getCurrentProject]);
+  const currentConfigs = useMemo(() => activeProjectIndex === -1 ? configs : (getCurrentProject()?.configs || configs), [activeProjectIndex, projects, configs, getCurrentProject]);
+  const currentOrder = useMemo(() => activeProjectIndex === -1 ? platformOrder : (getCurrentProject()?.platformOrder || platformOrder), [activeProjectIndex, projects, platformOrder, getCurrentProject]);
+  const currentHidden = useMemo(() => activeProjectIndex === -1 ? hiddenPlatforms : (getCurrentProject()?.hiddenPlatforms || hiddenPlatforms), [activeProjectIndex, projects, hiddenPlatforms, getCurrentProject]);
+  const currentProjectName = useMemo(() => activeProjectIndex === -1 ? "MasterProject" : (getCurrentProject()?.name || "Project"), [activeProjectIndex, projects, getCurrentProject]);
+
+  const selectedPlatforms = useMemo(() => {
+    return PLATFORMS_DATA.filter(p => {
+      const conf = currentConfigs[p.id];
+      return conf?.selected !== false;
+    });
+  }, [currentConfigs]);
+
+  // Handlers
+  const handleIngestMove = (index, direction) => {
+    const newOrder = [...ingestOrder];
+    if (direction === 'left' && index > 0) [newOrder[index], newOrder[index - 1]] = [newOrder[index - 1], newOrder[index]];
+    else if (direction === 'right' && index < newOrder.length - 1) [newOrder[index], newOrder[index + 1]] = [newOrder[index + 1], newOrder[index]];
+    setIngestOrder(newOrder);
+  };
+  
+  const handleIngestHide = (id) => {
+    setHiddenIngestItems(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+  };
+
+  const updateCurrentState = (stateKey, updates) => {
+    if (activeProjectIndex === -1) {
+      if (stateKey === 'assets') setAssets(prev => ({...prev, ...updates}));
+      if (stateKey === 'textData') setTextData(prev => ({...prev, ...updates}));
+      if (stateKey === 'visibility') setVisibility(prev => ({...prev, ...updates}));
+      if (stateKey === 'configs') setConfigs(prev => ({...prev, ...updates}));
+    } else {
+      setProjects(prev => {
+        const newProjects = [...prev];
+        if (newProjects[activeProjectIndex]) {
+          newProjects[activeProjectIndex] = {
+            ...newProjects[activeProjectIndex],
+            [stateKey]: { ...newProjects[activeProjectIndex][stateKey], ...updates }
+          };
+        }
+        return newProjects;
+      });
+    }
+  };
+
+  const updateStanResolveAsset = (format, file) => {
+    if(file) {
+      const url = URL.createObjectURL(file);
+      if (activeProjectIndex === -1) {
+        setAssets(prevAssets => {
+          const typeToUpdate = currentTextData.stanResolve?.type || 'STAN';
+          const newResolve = { ...prevAssets.stanResolve };
+          if (!newResolve[typeToUpdate]) newResolve[typeToUpdate] = {};
+          newResolve[typeToUpdate] = { ...newResolve[typeToUpdate], [format]: url };
+          return { ...prevAssets, stanResolve: newResolve };
+        });
+      } else {
+        setProjects(prevProjects => {
+          const newProjects = [...prevProjects];
+          const project = { ...newProjects[activeProjectIndex] };
+          const projTextData = project.textData || textData;
+          const typeToUpdate = projTextData.stanResolve?.type || 'STAN';
+          const newAssets = { ...project.assets };
+          const newResolve = { ...(newAssets.stanResolve || {}) };
+          if (!newResolve[typeToUpdate]) newResolve[typeToUpdate] = {};
+          newResolve[typeToUpdate] = { ...newResolve[typeToUpdate], [format]: url };
+          newAssets.stanResolve = newResolve;
+          project.assets = newAssets;
+          newProjects[activeProjectIndex] = project;
+          return newProjects;
+        });
+      }
+    }
+  };
+
+  const updateConfig = (platformId, updates) => updateCurrentState('configs', { [platformId]: { ...currentConfigs[platformId], ...updates } });
+  const updateElement = (platformId, elementId, updates) => { 
+    const currentPlatformConfig = currentConfigs[platformId] || {};
+    const currentElementConfig = currentPlatformConfig[elementId] || DEFAULT_POSITIONS[elementId]; 
+    updateCurrentState('configs', { 
+      [platformId]: { 
+        ...currentPlatformConfig, 
+        [elementId]: { ...currentElementConfig, ...updates } 
+      } 
+    }); 
+  };
+
+  const handleFileUpload = (key, file) => { if (file) { const url = URL.createObjectURL(file); updateCurrentState('assets', { [key]: url }); } };
+  const handlePhaseAudioUpload = (file, phaseIndex) => {
+    if (file) {
+      const url = URL.createObjectURL(file);
+      const newPhases = [...currentTextData.phases];
+      newPhases[phaseIndex] = { ...newPhases[phaseIndex], audio: url };
+      updateCurrentState('textData', { phases: newPhases });
+    }
+  };
+
+  const handleFontUpload = async (file) => {
+    if (file) {
+      const fontName = file.name.split('.')[0].replace(/[^a-zA-Z0-9]/g, '');
+      const fontUrl = URL.createObjectURL(file);
+      try {
+        const fontFace = new FontFace(fontName, `url(${fontUrl})`);
+        await fontFace.load();
+        document.fonts.add(fontFace);
+        setCustomFonts(prev => [...prev, { name: fontName, url: fontUrl }]);
+        setLastUploadedFont(fontName); 
+        const updatedPhases = currentTextData.phases.map(phase => ({ ...phase, lines: phase.lines.map(line => ({ ...line, font: fontName })) }));
+        updateCurrentState('textData', { classFont: fontName, phases: updatedPhases });
+      } catch (err) { console.error(err); }
+    }
+  };
+
+  const useDemoAssets = () => { 
+    updateCurrentState('assets', { 
+      '16x9': PLACEHOLDERS.video169, 
+      '1x1': PLACEHOLDERS.video11, 
+      '9x16': PLACEHOLDERS.video916, 
+      '4x5': PLACEHOLDERS.video45, 
+      'logo': PLACEHOLDERS.logo, 
+      'title': PLACEHOLDERS.title, 
+      'classIcon': null, 
+      'rating': 'M',
+      'stanResolve': {
+        'STAN': { '16x9': PLACEHOLDERS.video169, '1x1': PLACEHOLDERS.video11, '9x16': PLACEHOLDERS.video916, '4x5': PLACEHOLDERS.video45 },
+        'STAN_SPORT': { '16x9': PLACEHOLDERS.video169, '1x1': PLACEHOLDERS.video11, '9x16': PLACEHOLDERS.video916, '4x5': PLACEHOLDERS.video45 },
+        'STAN_PPV': { '16x9': PLACEHOLDERS.video169, '1x1': PLACEHOLDERS.video11, '9x16': PLACEHOLDERS.video916, '4x5': PLACEHOLDERS.video45 }
+      }
+    }); 
+  };
+
+  const createProject = () => {
+    const newProject = { 
+      id: Date.now(), 
+      name: `Project ${projects.length + 1}`, 
+      assets: { ...assets }, 
+      textData: { ...textData }, 
+      visibility: { ...visibility }, 
+      configs: { ...configs }, 
+      platformOrder: [...platformOrder], 
+      hiddenPlatforms: [...hiddenPlatforms] 
+    };
+    setProjects(prev => [...prev, newProject]);
+    setActiveProjectIndex(projects.length);
+  };
+
+  const renameProject = (index, newName) => { 
+    setProjects(prev => { 
+      const newProjects = [...prev]; 
+      newProjects[index].name = newName; 
+      return newProjects; 
+    }); 
+  };
+
+  const clearMaster = () => {
+    setAssets({ 
+      '16x9': null, '1x1': null, '9x16': null, '4x5': null, 
+      'logo': null, 'title': null, 'titleSquare': null, 'titleHrz': null, 'titleVertical': null, 'classIcon': null, 'rating': null,
+      stanResolve: {
+        'STAN': { '16x9': null, '1x1': null, '9x16': null, '4x5': null },
+        'STAN_SPORT': { '16x9': null, '1x1': null, '9x16': null, '4x5': null },
+        'STAN_PPV': { '16x9': null, '1x1': null, '9x16': null, '4x5': null }
+      }
+    });
+    setTextData({ 
+      classText: "Recommended for\nMature Audiences", classFont: 'sans-serif', classAlign: 'left', classWeight: '700', classSize: 1.0, classIconSize: 60, phases: [INITIAL_PHASE], 
+      lengths: [],
+      otherLength: '00:00:00',
+      targeting: [],
+      otherTargeting: '',
+      endboard: { enabled: false, timeCode: '00:00:00' },
+      stanResolve: { enabled: true, type: 'STAN', timeCode: '00:00:00' }
+    });
+    setConfigs({}); setActivePhaseIndex(0); setActiveProjectIndex(-1);
+  };
+
+  const deleteProject = (index, e) => { e.stopPropagation(); setProjects(prev => prev.filter((_, i) => i !== index)); if (activeProjectIndex === index) setActiveProjectIndex(-1); else if (activeProjectIndex > index) setActiveProjectIndex(activeProjectIndex - 1); };
+
+  const toggleGlobal = (key) => updateCurrentState('visibility', { [key]: { ...currentVisibility[key], global: !currentVisibility[key].global } });
+  const togglePlatform = (key, platformId) => { 
+    const currentVal = currentVisibility[key].platforms[platformId]; 
+    const newVal = currentVal === undefined ? false : !currentVal; 
+    updateCurrentState('visibility', { [key]: { ...currentVisibility[key], platforms: { ...currentVisibility[key].platforms, [platformId]: newVal } } }); 
+  };
+  
+  const isElementVisible = (key, platformId) => { 
+    if (!currentVisibility[key]) return false;
+    if (!currentVisibility[key].global) return false; 
+    return currentVisibility[key].platforms[platformId] !== false; 
+  };
+
+  const handleGridMove = (index, direction, e) => { 
+    e.stopPropagation(); 
+    const newOrder = [...currentOrder]; 
+    if (direction === 'left' && index > 0) [newOrder[index], newOrder[index - 1]] = [newOrder[index - 1], newOrder[index]]; 
+    else if (direction === 'right' && index < newOrder.length - 1) [newOrder[index], newOrder[index + 1]] = [newOrder[index + 1], newOrder[index]]; 
+    if (activeProjectIndex === -1) setPlatformOrder(newOrder); 
+    else {
+      setProjects(prev => { 
+        const p = [...prev]; 
+        p[activeProjectIndex] = { ...p[activeProjectIndex], platformOrder: newOrder };
+        return p; 
+      }); 
+    }
+  };
+
+  const handleGridHide = (id, e) => { 
+    e.stopPropagation(); 
+    const newHidden = currentHidden.includes(id) ? currentHidden.filter(p => p !== id) : [...currentHidden, id]; 
+    if (activeProjectIndex === -1) setHiddenPlatforms(newHidden); 
+    else {
+      setProjects(prev => { 
+        const p = [...prev]; 
+        p[activeProjectIndex] = { ...p[activeProjectIndex], hiddenPlatforms: newHidden };
+        return p; 
+      }); 
+    }
+  };
+
+  const getEffectiveData = (platformId) => {
+    const confs = currentConfigs || {}; 
+    const conf = confs[platformId] || {};
+    const effectiveAssets = conf.savedAssets || currentAssets || {}; 
+    const baseText = conf.savedTextData || currentTextData || { phases: [INITIAL_PHASE] };
+    const effectiveTextData = {
+      ...baseText,
+      endboard: baseText.endboard || currentTextData.endboard || { enabled: false, timeCode: '00:00:00' },
+      stanResolve: baseText.stanResolve || currentTextData.stanResolve || { enabled: true, type: 'STAN', timeCode: '00:00:00' }
+    };
+    return { effectiveAssets, effectiveTextData, conf };
+  };
+
+  const isReady = currentAssets['16x9'] || currentAssets['1x1'] || currentAssets['9x16'] || currentAssets['4x5'];
+  const getStanResolveCount = (type) => {
+    const typeAssets = currentAssets.stanResolve?.[type];
+    if (!typeAssets) return 0;
+    return Object.values(typeAssets).filter(Boolean).length;
+  };
+
+  const handleSelectionAll = (shouldSelect) => {
+    const newConfigs = { ...currentConfigs };
+    PLATFORMS_DATA.forEach(p => {
+      newConfigs[p.id] = { ...newConfigs[p.id], selected: shouldSelect };
+    });
+    updateCurrentState('configs', newConfigs);
+  };
+
+  // --- BATCH EXPORT LOGIC ---
+  const renderAndPackageFFmpeg = async (p, rolloutFolder, currentPhase, ffmpeg) => {
+    const { conf, effectiveAssets } = getEffectiveData(p.id);
+    const sourceUrl = effectiveAssets[p.source];
+    if (!sourceUrl) return;
+
+    const cleanFn = (str) => (str || '').toString().replace(/[\s\/\\()\[\]]/g, ''); 
+    const tList = (currentTextData.targeting || []).map(t => t === 'OTHER' ? currentTextData.otherTargeting : t);
+    const tStr = (tList.length === 0 ? ['Gen'] : tList).map(cleanFn).join('-');
+    const lStr = cleanFn((currentTextData.lengths || [])[0] || 'Dur');
+    
+    const outName = `${cleanFn(currentProjectName)}_${tStr}_${cleanFn(p.name)}_${lStr}_${cleanFn(currentPhase.type)}.mp4`;
+
+    // 1. Virtual FS Setup - Use FFmpeg.js v0.11 syntax
+    ffmpeg.FS('writeFile', 'input_video.mp4', await window.FFmpeg.fetchFile(sourceUrl));
+    
+    let filterComplex = "";
+    let inputCounter = 1;
+    let lastVStream = "0:v";
+
+    // Handle Logo Overlay
+    if (isElementVisible('logo', p.id) && effectiveAssets.logo) {
+      ffmpeg.FS('writeFile', 'logo.png', await window.FFmpeg.fetchFile(effectiveAssets.logo));
+      const pos = conf.logo || DEFAULT_POSITIONS.logo;
+      filterComplex += `[${inputCounter}:v]scale=iw*${pos.scale}:-1[lg];[${lastVStream}][lg]overlay=W*${pos.x/100}-w/2:H*${pos.y/100}-h/2[v1];`;
+      lastVStream = "v1";
+      inputCounter++;
+    }
+
+    // Handle Title Treatment
+    const activeTitleKey = ['titleSquare', 'titleHrz', 'titleVertical'].find(k => isElementVisible(k, p.id));
+    if (activeTitleKey && effectiveAssets.title) {
+      ffmpeg.FS('writeFile', 'title.png', await window.FFmpeg.fetchFile(effectiveAssets.title));
+      const pos = conf[activeTitleKey] || DEFAULT_POSITIONS[activeTitleKey];
+      filterComplex += `[${inputCounter}:v]scale=iw*${pos.scale}:-1[tl];[${lastVStream}][tl]overlay=W*${pos.x/100}-w/2:H*${pos.y/100}-h/2[v2];`;
+      lastVStream = "v2";
+      inputCounter++;
+    }
+
+    // 2. Audio Strategy
+    const audioArgs = currentPhase.audio 
+      ? ['-i', 'phase_audio.mp3', '-map', '0:v', '-map', `${inputCounter}:a`, '-c:a', 'aac', '-shortest']
+      : ['-c:a', 'copy'];
+
+    if (currentPhase.audio) {
+      ffmpeg.FS('writeFile', 'phase_audio.mp3', await window.FFmpeg.fetchFile(currentPhase.audio));
+    }
+
+    // 3. Execution
+    const ffmpegArgs = [
+      '-i', 'input_video.mp4',
+      ...(effectiveAssets.logo ? ['-i', 'logo.png'] : []),
+      ...(effectiveAssets.title ? ['-i', 'title.png'] : []),
+      ...(currentPhase.audio ? ['-i', 'phase_audio.mp3'] : []),
+      ...(filterComplex ? ['-filter_complex', filterComplex.slice(0, -1)] : []),
+      '-map', filterComplex ? `[${lastVStream}]` : '0:v',
+      '-c:v', 'libx264',
+      '-pix_fmt', 'yuv420p',
+      '-preset', 'ultrafast',
+      '-b:v', '5000k',
+      ...audioArgs,
+      outName
+    ];
+
+    await ffmpeg.run(...ffmpegArgs);
+
+    // 4. Output & Cleanup
+    const data = ffmpeg.FS('readFile', outName);
+    rolloutFolder.file(outName, data.buffer);
+    
+    // Cleanup virtual files
+    const files = ['input_video.mp4', 'logo.png', 'title.png', 'phase_audio.mp3', outName];
+    for (const f of files) try { ffmpeg.FS('unlink', f); } catch(e) {}
+  };
+
+  const handleBatchExport = async () => {
+    // 1. IMMEDIATE STATUS FEEDBACK
+    if (selectedPlatforms.length === 0) {
+      notify("Please select deliverables for rollout.");
+      return;
+    }
+    
+    // UI REFRESH: Show the progress bar before doing anything else
+    setRenderStatus({ 
+      current: 0, 
+      total: selectedPlatforms.length, 
+      progress: 0, 
+      label: "Waking up Encoder..." 
+    });
+
+    // 2. LIBRARY LOADING LOGIC
+    const checkFFmpeg = () => typeof window.FFmpeg !== 'undefined' && typeof window.FFmpeg.createFFmpeg === 'function';
+
+    if (!checkFFmpeg()) {
+      const loadScript = (src, id) => new Promise((resolve, reject) => {
+        if (document.getElementById(id)) return resolve();
+        const s = document.createElement('script');
+        s.id = id;
+        s.src = src;
+        s.crossOrigin = "anonymous";
+        s.onload = resolve;
+        s.onerror = (e) => reject(new Error(`Script Load Fail: ${src}`));
+        document.head.appendChild(s);
+      });
+
+      setRenderStatus(prev => ({ ...prev, label: "Loading compatible H.264 Encoder..." }));
+      try {
+        await Promise.all([
+          loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js", "lib-jszip"),
+          loadScript("https://unpkg.com/@ffmpeg/ffmpeg@0.11.0/dist/ffmpeg.min.js", "lib-ffmpeg-v11")
+        ]);
+        
+        let wait = 0;
+        while (!checkFFmpeg() && wait < 40) {
+          await new Promise(r => setTimeout(r, 100));
+          wait++;
+        }
+      } catch (err) {
+        setRenderStatus(null);
+        notify("Library Load Error. Check your internet connection.");
+        return;
+      }
+    }
+
+    if (!checkFFmpeg()) {
+      setRenderStatus(null);
+      notify("FFmpeg failed to initialize. Try refreshing your browser.");
+      return;
+    }
+
+    // 3. CORE INITIALIZATION
+    const { createFFmpeg } = window.FFmpeg;
+    const ffmpeg = createFFmpeg({
+      log: false,
+      // CRITICAL: Explicit corePath for the single-threaded v0.11 core
+      corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'
+    });
+
+    setRenderStatus(prev => ({ ...prev, label: "Preparing WASM Single-Thread Core..." }));
+    try {
+      await ffmpeg.load();
+    } catch (loadErr) {
+      setRenderStatus(null);
+      notify("Sandbox Restriction: Browser blocked WASM task. Try opening the tool in a new window.");
+      return;
+    }
+
+    // 4. BATCH RENDER LOOP
+    const currentPhase = currentTextData.phases[activePhaseIndex] || currentTextData.phases[0];
+    const zip = new window.JSZip();
+    const cleanFn = (str) => (str || '').toString().replace(/[\s\/\\()\[\]]/g, ''); 
+    const zipName = `${cleanFn(currentProjectName)}_${cleanFn(currentPhase.type)}_Rollout`;
+    const rolloutFolder = zip.folder(zipName);
+
+    try {
+      for (let i = 0; i < selectedPlatforms.length; i++) {
+        const p = selectedPlatforms[i];
+        setRenderStatus({ 
+          current: i + 1, 
+          total: selectedPlatforms.length, 
+          progress: ((i + 0.1) / selectedPlatforms.length) * 100,
+          label: `Exporting ${p.name}...` 
+        });
+
+        await renderAndPackageFFmpeg(p, rolloutFolder, currentPhase, ffmpeg);
+        setRenderStatus(prev => ({ ...prev, progress: ((i + 1) / selectedPlatforms.length) * 100 }));
+      }
+
+      setRenderStatus(prev => ({ ...prev, label: "Compressing Final Archive...", progress: 100 }));
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      triggerFileDownload(URL.createObjectURL(zipBlob), `${zipName}.zip`);
+
+      setRenderStatus(null);
+      notify("Campaign Rollout Successful!\nZIP archive has been downloaded.");
+    } catch (err) {
+      console.error(err);
+      setRenderStatus(null);
+      notify("Render Error: Batch process failed during file generation.");
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans selection:bg-indigo-500/30 pb-32">
+      <header className="border-b border-slate-700 bg-slate-800/50 backdrop-blur-md sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-6 pt-4 pb-0 flex flex-col gap-4">
+          <div className="flex items-center justify-between h-12">
+            <div className="flex items-center gap-3">
+              <Icon name="layout-template" className="text-indigo-400" size={24} />
+              <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-300 bg-clip-text text-transparent">
+                Master Campaign <span className="text-slate-500 font-medium text-sm ml-2">Rollout Tool</span>
+              </h1>
+            </div>
+            <div className="flex gap-3">
+              {!isReady && activeProjectIndex === -1 && <button onClick={useDemoAssets} className="text-xs font-medium text-slate-400 hover:text-white transition-colors">Load Demo Assets</button>}
+              {activeProjectIndex === -1 && isReady && <button onClick={createProject} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-lg shadow-indigo-500/20"><Icon name="folder-plus" size={16} /> Create Project</button>}
+              {activeProjectIndex === -1 && <button onClick={clearMaster} className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg text-sm font-medium transition-all"><Icon name="eraser" size={16} /> Clear Master</button>}
+            </div>
+          </div>
+          <div className="flex items-end gap-1 mt-2 overflow-x-auto custom-scrollbar">
+            <button onClick={() => setActiveProjectIndex(-1)} className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-colors flex items-center gap-2 border-t border-x ${activeProjectIndex === -1 ? 'bg-slate-800 text-indigo-400 border-slate-700' : 'bg-slate-900/50 text-slate-500 border-transparent hover:text-slate-300'}`}><Icon name="plus" size={12} /> Master Upload</button>
+            {projects.map((p, i) => (
+              <div key={p.id} className={`group relative flex items-center rounded-t-lg border-t border-x ${activeProjectIndex === i ? 'bg-slate-800 border-slate-700 z-10' : 'bg-slate-900/50 border-transparent hover:bg-slate-800/50'}`}>
+                {editingProjectId === p.id ? (
+                  <input autoFocus className="pl-4 pr-2 py-2 text-sm font-medium bg-transparent text-white outline-none w-32" value={p.name} onChange={(e) => renameProject(i, e.target.value)} onBlur={() => setEditingProjectId(null)} onKeyDown={(e) => e.key === 'Enter' && setEditingProjectId(null)} />
+                ) : (
+                  <button onClick={() => setActiveProjectIndex(i)} onDoubleClick={() => setEditingProjectId(p.id)} className={`pl-4 pr-8 py-2 text-sm font-medium transition-colors ${activeProjectIndex === i ? 'text-white' : 'text-slate-500 group-hover:text-slate-300'}`} title="Double-click to rename">{p.name}</button>
+                )}
+                <button onClick={(e) => deleteProject(i, e)} className="absolute right-1 p-1 hover:bg-slate-700 rounded-full text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"><Icon name="x" size={12} /></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-6 py-8">
+        <section className="mb-12 animate-in fade-in slide-in-from-bottom-5 duration-500">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-lg font-semibold flex items-center gap-2 text-slate-200"><Icon name="upload" className="text-indigo-400" /> Ingest & Classification {activeProjectIndex !== -1 && <span className="text-xs bg-slate-800 text-slate-400 px-2 py-1 rounded ml-2">Editing Project</span>}</h2>
+            <button onClick={() => setIsIngestManageMode(!isIngestManageMode)} className={`text-xs px-3 py-1.5 rounded-full border flex items-center gap-2 transition-colors ${isIngestManageMode ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'}`}><Icon name="settings-2" size={12} /> {isIngestManageMode ? 'Done Organizing' : 'Manage Grid'}</button>
+          </div>
+          
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-end">
+            {ingestOrder.map((id, index) => {
+              const module = INGEST_MODULES.find(m => m.id === id);
+              if (!module) return null;
+              const isHidden = hiddenIngestItems.includes(id);
+              if (!isIngestManageMode && isHidden) return null;
+
+              return (
+                <div key={id} className={`${module.colSpan} relative group ${isHidden ? 'opacity-50' : ''}`}>
+                  {isIngestManageMode && (
+                    <div className="absolute top-2 right-2 z-50 flex gap-1 bg-black/80 backdrop-blur-md p-1.5 rounded-lg border border-white/10 shadow-xl">
+                      <button onClick={() => handleIngestMove(index, 'left')} disabled={index === 0} className="p-1 hover:bg-white/20 rounded disabled:opacity-30 text-white"><Icon name="arrow-left" size={14} /></button>
+                      <button onClick={() => handleIngestMove(index, 'right')} disabled={index === ingestOrder.length - 1} className="p-1 hover:bg-white/20 rounded disabled:opacity-30 text-white"><Icon name="arrow-right" size={14} /></button>
+                      <div className="w-px bg-white/20 mx-1"></div>
+                      <button onClick={() => handleIngestHide(id)} className={`p-1 hover:bg-white/20 rounded ${isHidden ? 'text-red-400' : 'text-slate-300'}`}>{isHidden ? <Icon name="eye-off" size={14} /> : <Icon name="eye" size={14} />}</button>
+                    </div>
+                  )}
+
+                  {id === 'hero_169' && <FileUploader label="Hero 16:9" accept="video/*,.mov" current={currentAssets['16x9']} onUpload={(f) => handleFileUpload('16x9', f)} iconName="monitor" aspect="aspect-video" />}
+                  {id === 'hero_1x1' && <FileUploader label="Hero 1:1" accept="video/*,.mov" current={currentAssets['1x1']} onUpload={(f) => handleFileUpload('1x1', f)} iconName="maximize" aspect="aspect-square" />}
+                  {id === 'hero_9x16' && <FileUploader label="Hero 9:16" accept="video/*,.mov" current={currentAssets['9x16']} onUpload={(f) => handleFileUpload('9x16', f)} iconName="smartphone" aspect="aspect-[9/16]" />}
+                  {id === 'hero_4x5' && <FileUploader label="Hero 4:5" accept="video/*,.mov" current={currentAssets['4x5']} onUpload={(f) => handleFileUpload('4x5', f)} iconName="smartphone" aspect="aspect-[4/5]" />}
+                  
+                  {id === 'stan_resolve_section' && (
+                    <div className="bg-slate-800 rounded-xl p-4 border border-slate-700 h-full flex flex-col gap-4">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-slate-400 uppercase tracking-wider"><Icon name="play-circle" size={12} /> Stan Resolve (Alpha/Overlay)</div>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between mb-1">
+                              <label className="text-[10px] text-slate-500 block">ENABLE RESOLVE</label>
+                              <input type="checkbox" checked={currentTextData.stanResolve?.enabled} onChange={(e) => updateCurrentState('textData', { stanResolve: { ...currentTextData.stanResolve, enabled: e.target.checked } })} className="w-3.5 h-3.5 rounded border-slate-600 accent-indigo-500 cursor-pointer" />
+                            </div>
+                            <label className="text-[10px] text-slate-500 block mb-1">RESOLVE TYPE</label>
+                            <div className="flex bg-slate-900 rounded-lg p-1 border border-slate-700 gap-1">
+                              {STAN_RESOLVE_TYPES.map(type => {
+                                const count = getStanResolveCount(type.id);
+                                const isSelected = currentTextData.stanResolve?.type === type.id;
+                                return (
+                                  <button 
+                                      key={type.id}
+                                      onClick={() => updateCurrentState('textData', { stanResolve: { ...currentTextData.stanResolve, type: type.id } })}
+                                      className={`flex-1 py-2 text-[10px] font-bold rounded flex flex-col items-center justify-center transition-all ${isSelected ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+                                  >
+                                    <span>{type.label}</span>
+                                    <span className={`text-[8px] mt-0.5 px-1.5 rounded-full ${count === 4 ? 'bg-green-500/20 text-green-400' : 'bg-black/20 text-slate-500'}`}>{count}/4</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          <div className={`space-y-1 transition-opacity ${!currentTextData.stanResolve?.enabled ? 'opacity-30 pointer-events-none' : ''}`}>
+                            <label className="text-[10px] text-slate-500 block">START TIME (MM:SS:FF)</label>
+                            <input 
+                              type="text" 
+                              value={currentTextData.stanResolve?.timeCode} 
+                              onChange={(e) => updateCurrentState('textData', { stanResolve: { ...currentTextData.stanResolve, timeCode: e.target.value } })} 
+                              className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-sm font-mono text-white placeholder-slate-600 focus:border-indigo-500 outline-none" 
+                              placeholder="00:00:00" 
+                            />
+                          </div>
+                        </div>
+                        <div className="col-span-2 flex items-end gap-3 bg-slate-900/30 p-4 rounded-lg border border-slate-700/50 overflow-x-auto custom-scrollbar">
+                          <div className="w-32 flex-shrink-0">
+                            <FileUploader label="16:9" accept="video/*,.mov" current={currentAssets.stanResolve?.[currentTextData.stanResolve?.type || 'STAN']?.['16x9']} onUpload={(f) => updateStanResolveAsset('16x9', f)} iconName="film" aspect="aspect-video" />
+                          </div>
+                          <div className="w-16 flex-shrink-0">
+                            <FileUploader label="1:1" accept="video/*,.mov" current={currentAssets.stanResolve?.[currentTextData.stanResolve?.type || 'STAN']?.['1x1']} onUpload={(f) => updateStanResolveAsset('1x1', f)} iconName="film" aspect="aspect-square" />
+                          </div>
+                          <div className="w-12 flex-shrink-0">
+                            <FileUploader label="9:16" accept="video/*,.mov" current={currentAssets.stanResolve?.[currentTextData.stanResolve?.type || 'STAN']?.['9x16']} onUpload={(f) => updateStanResolveAsset('9x16', f)} iconName="film" aspect="aspect-[9/16]" />
+                          </div>
+                          <div className="w-14 flex-shrink-0">
+                            <FileUploader label="4:5" accept="video/*,.mov" current={currentAssets.stanResolve?.[currentTextData.stanResolve?.type || 'STAN']?.['4x5']} onUpload={(f) => updateStanResolveAsset('4x5', f)} iconName="film" aspect="aspect-[4/5]" />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {id === 'endboard_config' && (
+                    <div className="bg-slate-800 rounded-xl p-3 border border-slate-700 h-full flex flex-col gap-3">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-slate-400 uppercase tracking-wider"><Icon name="stop-circle" size={12} /> Endboard</div>
+                      <div className="flex items-center gap-2 bg-slate-900/50 p-2 rounded-lg border border-slate-700">
+                        <input type="checkbox" id="endboard-toggle" checked={currentTextData.endboard?.enabled} onChange={(e) => updateCurrentState('textData', { endboard: { ...currentTextData.endboard, enabled: e.target.checked } })} className="w-4 h-4 rounded border-slate-600 accent-indigo-500 cursor-pointer" />
+                        <label htmlFor="endboard-toggle" className="text-xs text-white font-medium cursor-pointer select-none">Enable Endboard</label>
+                      </div>
+                      <div className={`transition-opacity ${!currentTextData.endboard?.enabled ? 'opacity-30 pointer-events-none' : ''}`}>
+                        <label className="text-[10px] text-slate-500 block mb-1">START TIME (MM:SS:FF)</label>
+                        <input type="text" value={currentTextData.endboard?.timeCode} onChange={(e) => updateCurrentState('textData', { endboard: { ...currentTextData.endboard, timeCode: e.target.value } })} className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-sm font-mono text-white placeholder-slate-600 focus:border-indigo-500 outline-none" placeholder="00:00:00" />
+                      </div>
+                    </div>
+                  )}
+
+                  {id === 'campaign_length' && (
+                    <div className="bg-slate-800 rounded-xl p-3 border border-slate-700 h-full">
+                      <div className="flex items-center gap-2 mb-3 text-xs font-semibold text-slate-400 uppercase tracking-wider"><Icon name="clock" size={12} /> Campaign Lengths</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {LENGTH_OPTIONS.map(opt => (
+                          <label key={opt.val} className={`flex items-center justify-center p-2 rounded cursor-pointer border text-[10px] font-bold transition-all ${currentTextData.lengths?.includes(opt.val) ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900 border-slate-600 text-slate-400 hover:bg-slate-700'}`}>
+                            <input type="checkbox" className="hidden" checked={currentTextData.lengths?.includes(opt.val)} onChange={() => {
+                              const newLengths = currentTextData.lengths?.includes(opt.val) ? currentTextData.lengths.filter(l => l !== opt.val) : [...(currentTextData.lengths || []), opt.val];
+                              updateCurrentState('textData', { lengths: newLengths });
+                            }} />
+                            {opt.label}
+                          </label>
+                        ))}
+                      </div>
+                      {currentTextData.lengths?.includes('OTHER') && (
+                        <div className="mt-3 animate-in fade-in slide-in-from-top-1 duration-200">
+                          <label className="text-[8px] text-slate-500 block mb-1 uppercase tracking-tighter">Custom Length (MM:SS:FF)</label>
+                          <input 
+                            type="text" 
+                            value={currentTextData.otherLength || '00:00:00'} 
+                            onChange={(e) => updateCurrentState('textData', { otherLength: e.target.value })}
+                            placeholder="00:00:00"
+                            className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-sm font-mono text-white placeholder-slate-600 focus:border-indigo-500 outline-none"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {id === 'brand_assets' && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="flex flex-col gap-1">
+                        <VisibilityControl label="Logo" elementKey="logo" visibilityState={currentVisibility.logo} onToggleGlobal={() => toggleGlobal('logo')} onTogglePlatform={togglePlatform} iconName="image" />
+                        <FileUploader label="Logo" accept="image/*" current={currentAssets.logo} onUpload={(f) => handleFileUpload('logo', f)} iconName="image" mini isIncluded={currentVisibility.logo.global} highlightColor={ELEMENT_COLORS.logo.border} />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2 mb-1 text-xs font-bold text-slate-400 uppercase tracking-wider"><Icon name="type" size={12} /> Master Title</div>
+                        <FileUploader label="Upload Title" accept="image/*" current={currentAssets.title} onUpload={(f) => handleFileUpload('title', f)} iconName="type" mini isIncluded={true} highlightColor={ELEMENT_COLORS.title.border} />
+                        <div className="flex flex-col gap-1 mt-2">
+                          {['titleSquare', 'titleHrz', 'titleVertical'].map(key => (
+                            <div key={key} className="flex items-center gap-2 bg-slate-800 p-1.5 rounded border border-slate-700 cursor-pointer hover:bg-slate-700/50" onClick={() => toggleGlobal(key)}>
+                              <input type="checkbox" checked={currentVisibility[key].global} readOnly className={`ml-1 w-3 h-3 accent-${ELEMENT_COLORS[key].hex} pointer-events-none`} />
+                              <span className="text-[10px] text-slate-300 capitalize">{key.replace('title', '') || 'Title'} Layout</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {id === 'classification' && (
+                    <div className={`bg-slate-800 rounded-xl p-3 border transition-colors ${currentVisibility.classification.global ? ELEMENT_COLORS.classification.border : 'border-slate-800 opacity-60'}`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <VisibilityControl label="Classification" elementKey="classification" visibilityState={currentVisibility.classification} onToggleGlobal={() => toggleGlobal('classification')} onTogglePlatform={togglePlatform} iconName="alert-triangle" />
+                      </div>
+                      {currentVisibility.classification.global && (
+                        <>
+                          <FileUploader label="Class Icon" accept="image/*" current={currentAssets.classIcon} onUpload={(f) => handleFileUpload('classIcon', f)} iconName="image" mini isIncluded={true} highlightColor={ELEMENT_COLORS.classification.border} />
+                          <div className="flex items-center gap-2 border-t border-slate-700 pt-2 mt-2">
+                            <AlignmentControl value={currentTextData.classAlign} onChange={(val) => updateCurrentState('textData', { classAlign: val })} />
+                          </div>
+                          <div className="flex items-center gap-2 mt-1">
+                            <select value={currentTextData.classWeight} onChange={(e) => updateCurrentState('textData', { classWeight: e.target.value })} className="bg-slate-900 text-[10px] border border-slate-600 rounded px-1 py-1 text-slate-300 outline-none flex-grow">
+                              <option value="100">Thin</option><option value="300">Light</option><option value="400">Regular</option><option value="500">Medium</option><option value="700">Bold</option><option value="900">Black</option>
+                            </select>
+                            <input type="number" step="0.1" min="0.5" max="5.0" value={currentTextData.classSize} onChange={(e) => updateCurrentState('textData', { classSize: parseFloat(e.target.value) })} className="w-8 bg-slate-900 border border-slate-600 rounded text-[10px] text-slate-300 outline-none text-center" />
+                          </div>
+                          <textarea value={currentTextData.classText} onChange={(e) => updateCurrentState('textData', { classText: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 text-xs text-white placeholder-slate-500 focus:border-indigo-500 outline-none resize-none mt-2" placeholder="e.g. Rated M" rows={2} />
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {id === 'targeting' && (
+                    <div className="bg-slate-800 rounded-xl p-3 border border-slate-700 h-full">
+                      <div className="flex items-center gap-2 mb-3 text-xs font-semibold text-slate-400 uppercase tracking-wider"><Icon name="target" size={12} /> Targeting</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {TARGETING_OPTIONS.map(opt => (
+                          <label key={opt.val} className={`flex items-center justify-center p-2 rounded cursor-pointer border text-[10px] font-bold transition-all ${currentTextData.targeting?.includes(opt.val) ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900 border-slate-600 text-slate-400 hover:bg-slate-700'}`}>
+                            <input type="checkbox" className="hidden" checked={currentTextData.targeting?.includes(opt.val)} onChange={() => {
+                              const newTargeting = currentTextData.targeting?.includes(opt.val) ? currentTextData.targeting.filter(t => t !== opt.val) : [...(currentTextData.targeting || []), opt.val];
+                              updateCurrentState('textData', { targeting: newTargeting });
+                            }} />
+                            {opt.label}
+                          </label>
+                        ))}
+                      </div>
+                      {currentTextData.targeting?.includes('OTHER') && (
+                        <div className="mt-3 animate-in fade-in slide-in-from-top-1 duration-200">
+                          <label className="text-[8px] text-slate-500 block mb-1 uppercase tracking-tighter">Custom Target</label>
+                          <input 
+                            type="text" 
+                            value={currentTextData.otherTargeting || ''} 
+                            onChange={(e) => updateCurrentState('textData', { otherTargeting: e.target.value })}
+                            placeholder="e.g. Family"
+                            className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-xs text-white placeholder-slate-600 focus:border-indigo-500 outline-none"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {id === 'phase_messaging' && (
+                    <div className={`bg-slate-800 rounded-xl p-3 border transition-colors ${currentVisibility.showText.global ? ELEMENT_COLORS.showText.border : 'border-slate-800 opacity-60'}`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <VisibilityControl label="Phase Messaging" elementKey="showText" visibilityState={currentVisibility.showText} onToggleGlobal={() => toggleGlobal('showText')} onTogglePlatform={togglePlatform} iconName="message-square" />
+                        {currentVisibility.showText.global && (<button onClick={() => {
+                          const newPhases = [...currentTextData.phases, { id: Date.now(), type: 'PP', audio: null, lines: [{ id: Date.now(), text: "New Phase", weight: '700', size: 1.0, font: lastUploadedFont }], align: 'center' }];
+                          updateCurrentState('textData', { phases: newPhases });
+                        }} className="text-[10px] bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded flex items-center gap-1"><Icon name="plus" size={12} /> Add Phase</button>)}
+                      </div>
+                      {currentVisibility.showText.global && (
+                        <div className="space-y-4 max-h-[300px] overflow-y-auto custom-scrollbar pr-1">
+                          {currentTextData.phases.map((phase, idx) => (
+                            <div key={phase.id} className="relative group/phase border-l-2 border-slate-700 pl-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-indigo-400 uppercase font-bold">P{idx + 1}</span>
+                                  <select value={phase.type || 'PP'} onChange={(e) => {
+                                    const newPhases = [...currentTextData.phases];
+                                    newPhases[idx] = { ...newPhases[idx], type: e.target.value };
+                                    updateCurrentState('textData', { phases: newPhases });
+                                  }} className="bg-slate-900 text-[10px] text-slate-300 border border-slate-600 rounded px-1 py-0.5 outline-none max-w-[60px]">{PHASE_TYPES.map(t => <option key={t.code} value={t.code}>{t.code}</option>)}</select>
+                                  <AlignmentControl value={phase.align} onChange={(val) => {
+                                    const newPhases = [...currentTextData.phases];
+                                    newPhases[idx] = { ...newPhases[idx], align: val };
+                                    updateCurrentState('textData', { phases: newPhases });
+                                  }} />
+                                </div>
+                                {currentTextData.phases.length > 1 && (<button onClick={() => {
+                                  const newPhases = currentTextData.phases.filter((_, i) => i !== idx);
+                                  updateCurrentState('textData', { phases: newPhases });
+                                  if (activePhaseIndex >= idx) setActivePhaseIndex(Math.max(0, activePhaseIndex - 1));
+                                }} className="text-red-400 hover:text-red-300"><Icon name="trash" size={12} /></button>)}
+                              </div>
+                              <div className="space-y-2">
+                                {phase.lines.map((line, lineIdx) => (
+                                  <div key={line.id} className="bg-slate-900 rounded p-2 border border-slate-700 flex flex-col gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <input type="text" value={line.text} onChange={(e) => {
+                                        const newPhases = [...currentTextData.phases];
+                                        newPhases[idx].lines[lineIdx] = { ...newPhases[idx].lines[lineIdx], text: e.target.value };
+                                        updateCurrentState('textData', { phases: newPhases });
+                                      }} className="flex-grow bg-transparent text-sm text-white placeholder-slate-600 outline-none" placeholder="Line Text" style={{ fontWeight: line.weight, fontSize: `${line.size}em`, fontFamily: line.font || 'sans-serif' }} />
+                                      {phase.lines.length > 1 && (<button onClick={() => {
+                                        const newPhases = [...currentTextData.phases];
+                                        newPhases[idx].lines.splice(lineIdx, 1);
+                                        updateCurrentState('textData', { phases: newPhases });
+                                      }} className="text-slate-600 hover:text-red-400"><Icon name="x" size={12} /></button>)}
+                                    </div>
+                                    <div className="flex items-center gap-2 border-t border-slate-700 pt-1">
+                                      <select value={line.font} onChange={(e) => {
+                                        const newPhases = [...currentTextData.phases];
+                                        newPhases[idx].lines[lineIdx] = { ...newPhases[idx].lines[lineIdx], font: e.target.value };
+                                        updateCurrentState('textData', { phases: newPhases });
+                                      }} className="bg-slate-800 text-[10px] text-slate-300 rounded border border-slate-600 px-1 py-0.5 outline-none max-w-[80px]">
+                                        <option value="sans-serif">Default</option>
+                                        {customFonts.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
+                                      </select>
+                                      <select value={line.weight} onChange={(e) => {
+                                        const newPhases = [...currentTextData.phases];
+                                        newPhases[idx].lines[lineIdx] = { ...newPhases[idx].lines[lineIdx], weight: e.target.value };
+                                        updateCurrentState('textData', { phases: newPhases });
+                                      }} className="bg-slate-800 text-[10px] text-slate-300 rounded border border-slate-600 px-1 py-0.5 outline-none">
+                                        <option value="100">Thin</option><option value="400">Reg</option><option value="700">Bold</option><option value="900">Black</option>
+                                      </select>
+                                      <input type="number" step="0.1" value={line.size} onChange={(e) => {
+                                        const newPhases = [...currentTextData.phases];
+                                        newPhases[idx].lines[lineIdx] = { ...newPhases[idx].lines[lineIdx], size: parseFloat(e.target.value) };
+                                        updateCurrentState('textData', { phases: newPhases });
+                                      }} className="w-10 bg-slate-800 text-[10px] text-slate-300 rounded border border-slate-600 px-1 py-0.5 outline-none" />
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+
+                              <div className="mt-2 pt-2 border-t border-slate-700">
+                                <div className="flex items-center justify-between">
+                                  <label className="flex items-center gap-2 text-[10px] text-slate-400 cursor-pointer hover:text-white transition-colors">
+                                    <Icon name="music" size={12} className={phase.audio ? "text-green-400" : ""} />
+                                    <span>{phase.audio ? "Audio Swapped" : "Add Phase Audio"}</span>
+                                    <input type="file" accept="audio/*" className="hidden" onChange={(e) => handlePhaseAudioUpload(e.target.files?.[0], idx)} />
+                                  </label>
+                                  {phase.audio && (<button onClick={() => {
+                                    const newPhases = [...currentTextData.phases];
+                                    newPhases[idx].audio = null;
+                                    updateCurrentState('textData', { phases: newPhases });
+                                  }} className="text-[9px] text-red-400 hover:text-red-300">Remove</button>)}
+                                </div>
+                              </div>
+
+                              <button onClick={() => {
+                                const newPhases = [...currentTextData.phases];
+                                newPhases[idx].lines.push({ id: Date.now(), text: "New Line", weight: '400', size: 1.0, font: lastUploadedFont });
+                                updateCurrentState('textData', { phases: newPhases });
+                              }} className="mt-2 text-[10px] text-slate-400 hover:text-indigo-400 flex items-center gap-1"><Icon name="plus" size={10} /> Add Line</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {id === 'brand_fonts' && (
+                    <div className="bg-slate-800 rounded-xl p-3 border border-slate-700 h-full">
+                      <div className="flex items-center gap-2 mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wider"><Icon name="type" size={12} /> Brand Fonts</div>
+                      <label className="flex items-center justify-center gap-2 w-full p-2 border border-dashed border-slate-600 rounded-lg cursor-pointer hover:bg-slate-700 hover:border-slate-500 transition-colors">
+                        <Icon name="plus" size={12} className="text-slate-400" />
+                        <span className="text-[10px] text-slate-300">Add Font (TTF)</span>
+                        <input type="file" accept=".ttf,.otf" className="hidden" onChange={(e) => handleFontUpload(e.target.files?.[0])} />
+                      </label>
+                      {customFonts.length > 0 && (<div className="mt-2 flex flex-wrap gap-1">{customFonts.map((f, i) => (<span key={i} className="text-[9px] bg-slate-700 px-1.5 py-0.5 rounded text-slate-300">{f.name}</span>))}</div>)}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="border-t border-slate-700 pt-8 animate-in fade-in slide-in-from-bottom-5 duration-500 delay-150">
+          <div className="flex items-center justify-between mb-8">
+            <div className="flex items-center gap-6">
+              <h2 className="text-lg font-semibold flex items-center gap-2 text-slate-200"><Icon name="layout" className="text-indigo-400" /> Dynamic Rollout Variations</h2>
+              <div className="flex items-center bg-slate-800 rounded-lg p-1 border border-slate-700">
+                <button 
+                  onClick={() => handleSelectionAll(true)}
+                  className="px-3 py-1.5 text-[10px] font-bold text-slate-400 hover:text-white transition-colors border-r border-slate-700"
+                >
+                  SELECT ALL
+                </button>
+                <button 
+                  onClick={() => handleSelectionAll(false)}
+                  className="px-3 py-1.5 text-[10px] font-bold text-slate-400 hover:text-red-400 transition-colors"
+                >
+                  UNSELECT ALL
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              {currentTextData.phases.length > 1 && (
+                <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                  {currentTextData.phases.map((phase, idx) => (
+                    <button key={phase.id} onClick={() => setActivePhaseIndex(idx)} className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${activePhaseIndex === idx ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'} flex items-center gap-1`}>
+                      P{idx + 1} {phase.audio && <Icon name="music" size={8} className="text-green-400" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button onClick={() => setIsManageMode(!isManageMode)} className={`text-xs px-3 py-1.5 rounded-full border flex items-center gap-2 transition-colors ${isManageMode ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'}`}>
+                <Icon name="settings-2" size={12} /> {isManageMode ? 'Done' : 'Manage Grid'}
+              </button>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {currentOrder.map((id, index) => {
+              const platform = PLATFORMS_DATA.find(p => p.id === id);
+              if (!platform) return null;
+              const isHidden = currentHidden.includes(id);
+              if (!isManageMode && isHidden) return null;
+              
+              const { effectiveAssets, effectiveTextData, conf } = getEffectiveData(id);
+
+              return (
+                <div key={id} className={`relative group ${isHidden ? 'opacity-60' : ''}`}>
+                  {isManageMode && (
+                    <div className="absolute top-2 right-2 z-20 flex gap-1 bg-black/80 backdrop-blur-md p-1.5 rounded-lg border border-white/10 shadow-xl transition-opacity opacity-0 group-hover:opacity-100">
+                      <button onClick={(e) => handleGridMove(index, 'left', e)} disabled={index === 0} className="p-1 hover:bg-white/20 rounded disabled:opacity-30 text-white"><Icon name="arrow-left" size={14} /></button>
+                      <button onClick={(e) => handleGridMove(index, 'right', e)} disabled={index === currentOrder.length - 1} className="p-1 hover:bg-white/20 rounded disabled:opacity-30 text-white"><Icon name="arrow-right" size={14} /></button>
+                      <div className="w-px bg-white/20 mx-1"></div>
+                      <button onClick={(e) => handleGridHide(id, e)} className={`p-1 hover:bg-white/20 rounded ${isHidden ? 'text-red-400' : 'text-slate-300'}`}>{isHidden ? <Icon name="eye-off" size={14} /> : <Icon name="eye" size={14} />}</button>
+                    </div>
+                  )}
+                  {isManageMode && isHidden && (
+                    <div className="absolute inset-0 bg-slate-900/50 z-10 flex items-center justify-center pointer-events-none border-2 border-dashed border-slate-600 rounded-xl">
+                      <div className="bg-black/80 text-slate-400 px-3 py-1 rounded text-xs font-bold uppercase tracking-wider flex items-center gap-2"><Icon name="eye-off" size={12} /> Hidden</div>
+                    </div>
+                  )}
+                  
+                  <PlatformCard 
+                    platform={platform} 
+                    sourceVideo={effectiveAssets[platform.source]} 
+                    onClick={() => !isManageMode && setActivePlatformId(platform.id)} 
+                    isConfigured={conf.locked} 
+                    activePhase={effectiveTextData.phases[activePhaseIndex] || effectiveTextData.phases[0]} 
+                    assets={effectiveAssets} 
+                    visibility={currentVisibility}
+                    customFonts={customFonts}
+                    exportSettings={conf.exportIds || []}
+                    config={conf}
+                    textData={effectiveTextData}
+                    projectName={currentProjectName}
+                    onToggleSelection={() => {
+                      const currentVal = currentConfigs[platform.id]?.selected !== false;
+                      updateConfig(platform.id, { selected: !currentVal });
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      </main>
+
+      {/* --- BATCH EXPORT ACTION BAR --- */}
+      {selectedPlatforms.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 z-[80] bg-slate-900/80 backdrop-blur-xl border-t border-indigo-500/30 shadow-[0_-10px_40px_rgba(0,0,0,0.5)] animate-in slide-in-from-bottom-full duration-500">
+          <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-6">
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Rollout Batch</span>
+                <span className="text-xl font-black text-white">{selectedPlatforms.length} Deliverables Selected</span>
+              </div>
+              <div className="h-10 w-px bg-slate-700 hidden md:block"></div>
+              <div className="hidden md:flex gap-4">
+                <div className="flex items-center gap-2 text-xs text-slate-400">
+                  <Icon name="mic" size={14} className={(currentTextData.phases[activePhaseIndex] || currentTextData.phases[0]).audio ? "text-green-400" : "text-slate-600"} />
+                  <span>Audio: {(currentTextData.phases[activePhaseIndex] || currentTextData.phases[0]).audio ? "Bespoke Swaps" : "Master Pass"}</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-slate-400">
+                  <Icon name="layers" size={14} className="text-indigo-400" />
+                  <span>Layouts: {PLATFORMS_DATA.filter(p => currentConfigs[p.id]?.locked).length} Bespoke</span>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => handleSelectionAll(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white transition-colors"
+              >
+                DISCARD SELECTION
+              </button>
+              <button 
+                onClick={handleBatchExport}
+                className="group relative overflow-hidden bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-3 rounded-full font-black text-sm shadow-2xl shadow-indigo-500/40 flex items-center gap-3 transition-all transform active:scale-95"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:animate-[shimmer_2s_infinite] pointer-events-none"></div>
+                <Icon name="download" size={18} />
+                GENERATE ROLLOUT (.ZIP)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- RENDERING PROGRESS OVERLAY --- */}
+      {renderStatus && (
+        <div className="fixed inset-0 z-[200] bg-slate-900/90 backdrop-blur-md flex items-center justify-center p-6">
+          <div className="w-full max-w-md bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl p-8 flex flex-col items-center text-center">
+             <div className="w-16 h-16 bg-indigo-600/20 rounded-full flex items-center justify-center mb-6 animate-pulse">
+                <Icon name="loader-2" size={32} className="text-indigo-400 animate-spin" />
+             </div>
+             <h3 className="text-xl font-bold text-white mb-2">Generating Rollout</h3>
+             <p className="text-slate-400 text-sm mb-8 leading-relaxed">
+                Compositing overlays and encoding high-fidelity native H.264 MP4.<br/>
+                Please keep this tab focused during the render.
+             </p>
+             
+             <div className="w-full bg-slate-900 rounded-full h-3 mb-3 overflow-hidden border border-slate-700">
+                <div 
+                   className="h-full bg-indigo-500 transition-all duration-300" 
+                   style={{ width: `${renderStatus.progress}%` }}
+                ></div>
+             </div>
+             
+             <div className="w-full flex justify-between items-center text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                <span className="truncate max-w-[200px]">{renderStatus.label}</span>
+                <span>{renderStatus.current} / {renderStatus.total} Items</span>
+             </div>
+          </div>
+        </div>
+      )}
+
+      {activePlatformId && (
+        <EditorModal 
+          platform={PLATFORMS_DATA.find(p => p.id === activePlatformId)}
+          assets={getEffectiveData(activePlatformId).effectiveAssets}
+          textData={getEffectiveData(activePlatformId).effectiveTextData}
+          visibility={currentVisibility}
+          activePhaseIndex={activePhaseIndex}
+          isElementVisible={isElementVisible}
+          togglePlatformVisibility={togglePlatform}
+          onClose={() => setActivePlatformId(null)}
+          config={getEffectiveData(activePlatformId).conf}
+          onUpdateElement={(id, updates) => updateElement(activePlatformId, id, updates)}
+          onUpdateConfig={(updates) => updateConfig(activePlatformId, updates)}
+          onToggleLock={() => {
+            const currentPlatformConfig = currentConfigs[activePlatformId] || {};
+            const isCurrentlyLocked = currentPlatformConfig.locked;
+            let updates = { locked: !isCurrentlyLocked };
+            if (!isCurrentlyLocked) {
+              ['logo', 'titleSquare', 'titleHrz', 'titleVertical', 'classification', 'showText'].forEach(el => {
+                if (!currentPlatformConfig[el]) updates[el] = { ...DEFAULT_POSITIONS[el] };
+              });
+            } 
+            updateConfig(activePlatformId, updates);
+          }}
+          onRevert={() => updateConfig(activePlatformId, { locked: false, savedAssets: undefined, savedTextData: undefined })}
+          onUpdateTextData={(field, val) => updateCurrentState('textData', { [field]: val })}
+          onLocalTextUpdate={(phaseIdx, lineIdx, field, val) => {
+            const currentPlatformConfig = currentConfigs[activePlatformId] || {};
+            let localTextData = currentPlatformConfig.savedTextData ? JSON.parse(JSON.stringify(currentPlatformConfig.savedTextData)) : JSON.parse(JSON.stringify(currentTextData));
+            if (lineIdx !== null) localTextData.phases[phaseIdx].lines[lineIdx][field] = val;
+            updateConfig(activePlatformId, { savedTextData: localTextData });
+          }}
+          customFonts={customFonts}
+        />
+      )}
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <NotificationProvider>
+      <VideoRolloutTool />
+    </NotificationProvider>
+  );
+}
